@@ -1,34 +1,55 @@
-AS=nasm
-CC=gcc
-LD=ld
+AS = nasm
+CC = gcc
+LD = ld
 
-ASFLAGS=-f elf32
-CFLAGS=-m32 -ffreestanding -fno-stack-protector -fno-pic -O2 -Wall -Wextra -std=gnu11
-LDFLAGS=-m elf_i386 -T linker.ld -nostdlib -z max-page-size=0x1000
+SRCDIR = src
+INCDIR = header
+OUTBIN = hawkos.bin
+OUTISO = hawkos.iso
 
-OBJS=boot.o kernel.o
+ASFLAGS = -f elf32
+CFLAGS  = -m32 -ffreestanding -fno-stack-protector -fno-pic -O2 -Wall -Wextra -std=gnu11 -I$(INCDIR)
+LDFLAGS = -m elf_i386 -T linker.ld -nostdlib -z max-page-size=0x1000
 
-all: hawkos.iso
+# add files here as you grow (e.g., $(SRCDIR)/pic.o $(SRCDIR)/idt_stubs.o $(SRCDIR)/idt_load.o)
+OBJS = \
+  $(SRCDIR)/boot.o \
+  $(SRCDIR)/kernel.o \
+  $(SRCDIR)/gdt.o \
+  $(SRCDIR)/idt.o
 
-hawkos.bin: $(OBJS) linker.ld
+all: $(OUTISO)
+
+# kernel ELF/bin
+$(OUTBIN): $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-hawkos.iso: hawkos.bin grub.cfg
+# bootable ISO with GRUB
+$(OUTISO): $(OUTBIN) grub.cfg
 	mkdir -p iso/boot/grub
-	cp hawkos.bin iso/boot/hawkos.bin
+	cp $(OUTBIN) iso/boot/hawkos.bin
 	cp grub.cfg iso/boot/grub/grub.cfg
-	grub-mkrescue -o hawkos.iso iso
+	grub-mkrescue -o $(OUTISO) iso
 
-run: hawkos.iso
-	qemu-system-i386 -cdrom hawkos.iso -serial stdio
+# Run helpers
+run: $(OUTISO)
+	qemu-system-i386 -cdrom $(OUTISO) -serial stdio
 
-%.o: %.s
+run-bin: $(OUTBIN)
+	qemu-system-i386 -kernel $(OUTBIN) -serial stdio
+
+# Build rules
+$(SRCDIR)/%.o: $(SRCDIR)/%.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-%.o: %.c
+$(SRCDIR)/%.o: $(SRCDIR)/%.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(SRCDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf *.o hawkos.bin hawkos.iso iso
+	rm -f $(SRCDIR)/*.o $(OUTBIN) $(OUTISO)
+	rm -rf iso
 
-.PHONY: all run clean
+.PHONY: all run run-bin clean
