@@ -13,9 +13,10 @@ dd CHK
 SECTION .text
 global _start
 extern kernel_main
-
+extern load_gdt
 _start:
     cli
+    call load_gdt
     mov esp, stack_top
 
     call kernel_main
