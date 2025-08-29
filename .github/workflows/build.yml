@@ -1,0 +1,14 @@
+name: build-iso
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y build-essential gcc-multilib binutils grub-pc-bin xorriso mtools make
+      - run: make iso
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hawkOS.iso
+          path: hobby-os.iso
