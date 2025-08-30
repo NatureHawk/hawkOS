@@ -1,5 +1,5 @@
 #include <stdint.h>
-
+#include "header/idt.h"
 typedef struct __attribute__((packed)) {
     uint16_t base_lo;
     uint16_t sel;
@@ -18,6 +18,7 @@ static idtr_t idtr;
 
 extern void isr_stub(void);
 extern void idt_load(void*);
+extern void irq0_stub(void);
 
 static void set_gate(int n, uint32_t h) {
     idt[n].base_lo = (uint16_t)(h & 0xFFFF);
@@ -31,5 +32,7 @@ void idt_init(void) {
     for (int i = 0; i < 256; i++) set_gate(i, (uint32_t)isr_stub);
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint32_t)&idt[0];
+    set_gate(32, (uint32_t)irq0_stub);
     idt_load(&idtr);
 }
+

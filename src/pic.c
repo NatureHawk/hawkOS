@@ -48,3 +48,5 @@ void pic_send_eoi(uint8_t irq){
     if(irq >= 8) outb(PIC2_CMD, 0x20);
     outb(PIC1_CMD, 0x20);
 }
+
+
