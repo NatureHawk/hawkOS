@@ -19,6 +19,7 @@ static idtr_t idtr;
 extern void isr_stub(void);
 extern void idt_load(void*);
 extern void irq0_stub(void);
+extern void irq1_stub(void);
 
 static void set_gate(int n, uint32_t h) {
     idt[n].base_lo = (uint16_t)(h & 0xFFFF);
@@ -33,6 +34,7 @@ void idt_init(void) {
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint32_t)&idt[0];
     set_gate(32, (uint32_t)irq0_stub);
+    set_gate(33, (uint32_t)irq1_stub);
     idt_load(&idtr);
 }
 

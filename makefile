@@ -22,7 +22,9 @@ OBJS = \
   $(SRCDIR)/pit.o \
   $(SRCDIR)/isr.o \
   $(SRCDIR)/idt_asm.o\
-  $(SRCDIR)/irq0.o
+  $(SRCDIR)/irq0.o\
+  $(SRCDIR)/kbd.o\
+  $(SRCDIR)/console.o
 
 all: $(OUTISO)
 
