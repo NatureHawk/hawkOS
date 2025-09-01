@@ -1,0 +1,14 @@
+*.o
+*.a
+*.bin
+*.img
+*.iso
+*.map
+*.log
+iso/
+build/
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.tmp
