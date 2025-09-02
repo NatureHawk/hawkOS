@@ -5,6 +5,10 @@
 #include "header/pic.h"
 #include "header/kbd.h"
 #include "header/console.h"
+#include "header/exceptions.h"
+#include "serial.h"
+#include "kprintf.h"
+
 
 
 static volatile uint16_t* const vga = (uint16_t*)0xB8000;
@@ -35,6 +39,11 @@ void kernel_main(void) {
     console_puts("We are in 32-bit protected mode.\n");
 
     idt_init();
+    exceptions_init();
+    serial_init();
+    kprintf("\n[boot] serial online, vga online\n");
+    kprintf("[boot] tick=%u (start)\n", 0u);
+    
     pic_remap(0x20,0x28);
 
     outb(0x21, 0xFC); //enabling the timer and keyboard intterupts
@@ -44,13 +53,13 @@ void kernel_main(void) {
     pit_init(100);
     kbd_init();
     __asm__ __volatile__("sti");
-
-    console_puts("tick-\n");
-    for (;;) {
+    shell_run();
+    /*for (;;) {
         printu_at(5,2, ticks);
 
         int ch=kbd_getc();
         if(ch !=-1)console_putc((char)ch);
         __asm__ __volatile__("hlt");
-    }
+    }*/
+    
 }

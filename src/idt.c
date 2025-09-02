@@ -21,7 +21,7 @@ extern void idt_load(void*);
 extern void irq0_stub(void);
 extern void irq1_stub(void);
 
-static void set_gate(int n, uint32_t h) {
+void set_gate(int n, uint32_t h) {
     idt[n].base_lo = (uint16_t)(h & 0xFFFF);
     idt[n].sel     = 0x08;          // kernel code selector from your GDT
     idt[n].zero    = 0;

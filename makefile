@@ -24,7 +24,13 @@ OBJS = \
   $(SRCDIR)/idt_asm.o\
   $(SRCDIR)/irq0.o\
   $(SRCDIR)/kbd.o\
-  $(SRCDIR)/console.o
+  $(SRCDIR)/console.o\
+  $(SRCDIR)/exceptions.o\
+  $(SRCDIR)/isr_exn.o\
+  $(SRCDIR)/serial.o\
+  $(SRCDIR)/kprintf.o\
+  $(SRCDIR)/tty.o\
+  $(SRCDIR)/shell.o
 
 all: $(OUTISO)
 
@@ -47,19 +53,21 @@ run-bin: $(OUTBIN)
 	qemu-system-i386 -kernel $(OUTBIN) -serial stdio
 
 # Build rules
+# NASM (ASM → OBJ)
+$(SRCDIR)/%.o: $(SRCDIR)/%.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
 $(SRCDIR)/boot.o: $(SRCDIR)/boot.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-# NASM .asm (gdt, idt -> idt_asm.o, isr)
-$(SRCDIR)/gdt.o: $(SRCDIR)/gdt.asm
-	$(AS) $(ASFLAGS) $< -o $@
+# Force idt.o to come from idt.c (exports idt_init, set_gate)
+$(SRCDIR)/idt.o: $(SRCDIR)/idt.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
+# Force idt_asm.o to come from idt.asm (exports idt_load, maybe isr_stub)
 $(SRCDIR)/idt_asm.o: $(SRCDIR)/idt.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(SRCDIR)/isr.o: $(SRCDIR)/isr.asm
-	$(AS) $(ASFLAGS) $< -o $@
-	
 $(SRCDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
