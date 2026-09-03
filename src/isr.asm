@@ -15,3 +15,13 @@ irq1_stub:
     call keyboard_handler_c
     popa
     iret
+
+global irq12_stub
+extern mouse_handler_c
+
+irq12_stub:
+    pusha
+    call mouse_handler_c
+    popa
+    iret
+section .note.GNU-stack noalloc noexec nowrite progbits

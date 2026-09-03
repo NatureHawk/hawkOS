@@ -1,0 +1,10 @@
+click 926 172
+wait 1
+click 80 372
+wait 2
+click 400 103
+wait 1
+type https://www.google.com
+key ret
+wait 120
+shot shots/11-google.png

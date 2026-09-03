@@ -1,0 +1,17 @@
+click 924 174
+wait 1
+click 80 396
+wait 3
+click 400 133
+wait 1
+type hobby operating system
+key ret
+wait 55
+click 1030 84
+wait 2
+shot shots/26-browser-newtab.png
+click 240 84
+wait 2
+click 300 515
+wait 90
+shot shots/27-browser-link.png

@@ -1,0 +1,14 @@
+click 926 172
+wait 1
+click 80 172
+wait 1
+type net
+key ret
+wait 2
+type ping 10.0.2.2
+key ret
+wait 6
+type dns example.com
+key ret
+wait 5
+shot shots/05-net.png

@@ -1,0 +1,20 @@
+click 926 172
+wait 1
+click 80 372
+wait 2
+click 310 373
+wait 150
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+key pgdn
+wait 3
+shot shots/12-wikipedia-article.png

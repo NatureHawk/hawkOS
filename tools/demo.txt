@@ -1,0 +1,24 @@
+# Close the About window that opens on boot
+click 926 172
+wait 1
+# Terminal: run a command through the GUI window
+click 80 172
+wait 1
+type help
+key ret
+wait 1
+type meminfo
+key ret
+wait 1
+type ps
+key ret
+wait 1.5
+shot shots/02-terminal.png
+# Task Manager
+click 80 272
+wait 1.5
+shot shots/03-taskman.png
+# Files
+click 80 72
+wait 2
+shot shots/04-files.png

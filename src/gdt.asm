@@ -47,3 +47,5 @@ load_gdt:
     jmp 0x08:flush
 flush:
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

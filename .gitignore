@@ -12,3 +12,14 @@ build/
 .DS_Store
 *.swp
 *.tmp
+
+# Windows Explorer drops these alternate-data-stream files all over a WSL
+# share; they are not part of the project.
+*:Zone.Identifier
+
+# Prebuilt Windows binary shipped in the vendored BearSSL tree. hawkOS does
+# not use the T0 compiler - the generated .c files are already in src/.
+third_party/bearssl/T0Comp.exe
+
+# Scratch file used by tools/patch.py; contents are transient.
+tools/edits.json

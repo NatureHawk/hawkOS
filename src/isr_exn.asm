@@ -59,3 +59,5 @@ EXC_NOERR 28
 EXC_NOERR 29
 EXC_ERR   30
 EXC_NOERR 31
+
+section .note.GNU-stack noalloc noexec nowrite progbits

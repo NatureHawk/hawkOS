@@ -11,3 +11,5 @@ isr_stub:
     cli
 .h: hlt
     jmp .h
+
+section .note.GNU-stack noalloc noexec nowrite progbits

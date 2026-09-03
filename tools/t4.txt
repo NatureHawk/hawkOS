@@ -1,0 +1,13 @@
+click 924 174
+wait 1
+click 80 78
+wait 3
+shot shots/30-files-root.png
+click 200 168
+wait 1
+click 200 168
+wait 2
+shot shots/31-files-docs.png
+click 200 205
+wait 2
+shot shots/32-files-preview.png

@@ -1,0 +1,8 @@
+click 926 172
+wait 1
+click 80 172
+wait 1
+type fetch https://example.com
+key ret
+wait 90
+shot shots/07-https.png

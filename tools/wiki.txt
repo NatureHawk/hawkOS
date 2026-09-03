@@ -1,0 +1,7 @@
+click 926 172
+wait 1
+click 80 372
+wait 2
+click 310 373
+wait 150
+shot shots/10-wikipedia.png

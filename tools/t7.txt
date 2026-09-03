@@ -1,0 +1,8 @@
+click 934 174
+wait 1
+click 80 184
+wait 2
+type net
+key ret
+wait 2
+shot shots/50-offline-term.png

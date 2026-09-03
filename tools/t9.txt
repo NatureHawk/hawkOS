@@ -1,0 +1,13 @@
+click 944 174
+wait 1
+click 80 396
+wait 3
+click 280 387
+wait 60
+shot shots/63-wheel-before.png
+wheel 6
+wait 3
+shot shots/64-wheel-after.png
+wheel -3
+wait 3
+shot shots/65-wheel-up.png

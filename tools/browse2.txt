@@ -1,0 +1,7 @@
+click 926 172
+wait 1
+click 80 372
+wait 2
+click 280 353
+wait 45
+shot shots/09-browser-https.png

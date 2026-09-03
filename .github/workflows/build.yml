@@ -1,14 +1,37 @@
 name: build-iso
-on: [push]
+
+on: [push, pull_request]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update
-      - run: sudo apt-get install -y build-essential gcc-multilib binutils grub-pc-bin xorriso mtools make
-      - run: make iso
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-multilib binutils nasm make \
+            grub-pc-bin grub-efi-amd64-bin xorriso mtools dosfstools
+
+      # Built as its own step so a failure here is obviously a third-party
+      # build problem rather than a kernel one. The kernel target depends on
+      # the archive, so this also warms it for the next step.
+      - name: Build vendored BearSSL
+        run: sh tools/build_bearssl.sh
+
+      - name: Build kernel and ISO
+        run: make iso
+
+      - name: Report image sizes
+        run: |
+          ls -l hawkos.bin hawkos.iso build/libbearssl.a
+          size hawkos.bin
+
       - uses: actions/upload-artifact@v4
         with:
-          name: hawkOS.iso
-          path: hobby-os.iso
+          name: hawkOS-iso
+          path: |
+            hawkos.iso
+            hawkos.bin

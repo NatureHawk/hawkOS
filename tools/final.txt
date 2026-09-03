@@ -1,0 +1,31 @@
+shot shots/40-boot-about.png
+click 962 174
+wait 1
+click 80 184
+wait 2
+type help
+key ret
+wait 1
+type meminfo
+key ret
+wait 1
+type ping 10.0.2.2
+key ret
+wait 8
+type dns wikipedia.org
+key ret
+wait 6
+shot shots/41-terminal.png
+click 80 290
+wait 2
+shot shots/42-taskman.png
+click 70 778
+wait 2
+shot shots/43-launcher.png
+key esc
+wait 1
+click 80 396
+wait 3
+click 280 387
+wait 70
+shot shots/44-search.png

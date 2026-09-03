@@ -20,6 +20,7 @@ extern void isr_stub(void);
 extern void idt_load(void*);
 extern void irq0_stub(void);
 extern void irq1_stub(void);
+extern void irq12_stub(void);
 
 void set_gate(int n, uint32_t h) {
     idt[n].base_lo = (uint16_t)(h & 0xFFFF);
@@ -35,6 +36,7 @@ void idt_init(void) {
     idtr.base  = (uint32_t)&idt[0];
     set_gate(32, (uint32_t)irq0_stub);
     set_gate(33, (uint32_t)irq1_stub);
+    set_gate(44, (uint32_t)irq12_stub);   // IRQ12 = PS/2 mouse (slave PIC line 4)
     idt_load(&idtr);
 }
 

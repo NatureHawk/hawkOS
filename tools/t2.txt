@@ -1,0 +1,11 @@
+click 924 174
+wait 1
+click 80 396
+wait 3
+shot shots/24-browser-home.png
+click 400 133
+wait 1
+type hobby operating system
+key ret
+wait 60
+shot shots/25-browser-search.png

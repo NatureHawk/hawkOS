@@ -1,0 +1,13 @@
+click 934 174
+wait 1
+click 80 184
+wait 2
+type uptime
+key ret
+wait 1
+shot shots/61-abs-terminal.png
+click 80 290
+wait 2
+mouse 640 400
+wait 1
+shot shots/62-abs-taskman.png

@@ -1,0 +1,10 @@
+click 924 174
+wait 1
+click 80 396
+wait 3
+click 280 347
+wait 130
+shot shots/36-wiki-top.png
+wheel 8
+wait 3
+shot shots/37-wiki-body.png

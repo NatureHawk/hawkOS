@@ -1,0 +1,5 @@
+click 926 172
+wait 1
+click 80 372
+wait 2
+shot shots/08-browser-home.png
