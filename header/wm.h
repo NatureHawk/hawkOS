@@ -8,6 +8,11 @@
 #define WM_TASKBAR_H    44
 #define WM_TITLE_MAX    28
 
+// Floor on a window's outer size. Below this the title bar's three buttons
+// start colliding with the title, and no app's client area is usable.
+#define WM_MIN_W        260
+#define WM_MIN_H        160
+
 typedef struct wm_window wm_window_t;
 
 enum {
@@ -17,7 +22,14 @@ enum {
     WM_EV_MOUSE_UP,
     WM_EV_MOUSE_MOVE,
     WM_EV_TICK,         // ~4 Hz, every window, for anything self-refreshing
-    WM_EV_CLOSE         // last call before the slot is released
+    WM_EV_CLOSE,        // last call before the slot is released
+
+    // The client area changed size: ev.x and ev.y are its new width and
+    // height. Apps that measure at paint time need do nothing; apps holding
+    // laid-out geometry (the browser's display list) have to rebuild it here,
+    // because paint happens with the clip already set and is too late to
+    // reflow.
+    WM_EV_RESIZE
 };
 
 typedef struct {
@@ -30,8 +42,11 @@ typedef void (*wm_handler_t)(wm_window_t* win, const wm_event_t* ev);
 
 struct wm_window {
     int          used;
+    uint32_t     id;                  // stable identity; slots get reused, ids do not
     int          minimized;
+    int          maximized;
     int          x, y, w, h;          // outer rect, including title bar
+    int          rx, ry, rw, rh;      // geometry to restore a maximised window to
     char         title[WM_TITLE_MAX];
     wm_handler_t handler;
     void*        user;                // per-app state, owned by the app
@@ -44,6 +59,33 @@ void          wm_close(wm_window_t* win);
 void          wm_focus(wm_window_t* win);
 int           wm_is_focused(const wm_window_t* win);
 int           wm_window_count(void);
+
+void          wm_maximize(wm_window_t* win, int on);
+void          wm_minimize(wm_window_t* win, int on);
+
+// Resizes and/or moves a window, clamped to the minimum size and the work
+// area, and tells the app if its client area changed.
+void          wm_set_geometry(wm_window_t* win, int x, int y, int w, int h);
+
+// The screen minus the taskbar: what a maximised or snapped window fills.
+void          wm_work_area(int* x, int* y, int* w, int* h);
+
+// Read-only view of the open windows, for anything that wants to list or act
+// on them from outside -- the task manager, chiefly. Windows are addressed by
+// id rather than by pointer so a caller can hold on to one across a repaint
+// without risking a freed slot.
+typedef struct {
+    uint32_t id;
+    char     title[WM_TITLE_MAX];
+    int      focused;
+    int      minimized;
+    int      maximized;
+    int      w, h;
+} wm_info_t;
+
+int  wm_snapshot(wm_info_t* out, int max);   // topmost first
+int  wm_close_id(uint32_t id);               // 0 on success, -1 if no such window
+int  wm_focus_id(uint32_t id);
 
 // Marks the frame dirty. The compositor is idle until something asks for a
 // repaint, so an app that changes its own state must call this or the change

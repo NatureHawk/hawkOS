@@ -1,51 +1,65 @@
 BITS 32
 
-gdt_start:
+; The GDT itself is built in C (src/gdt.c) now that it has to carry a TSS
+; descriptor holding a runtime address. What is left here is the part that has
+; to be assembly: loading the register and reloading the segment selectors,
+; which cannot be expressed in C.
 
-;Null descriptor 
-gdt_null: 
-    dq 0               
+section .text
 
-; 0x08 — Code segment descriptor
-gdt_code:
-    dw 0xFFFF           ; Limit (bits 0–15)
-    dw 0x0000           ; Base (bits 0–15)
-    db 0x00             ; Base (bits 16–23)
-    db 0x9A             ; Access byte (code, ring 0, present)
-    db 0xCF             ; Flags + Limit high bits (4KB granularity, 32-bit)
-    db 0x00             ; Base (bits 24–31)
+global gdt_flush
+gdt_flush:
+    mov eax, [esp + 4]
+    lgdt [eax]
 
-; 0x10 — Data segment descriptor
-gdt_data:
-    dw 0xFFFF
-    dw 0x0000
-    db 0x00
-    db 0x92             ; Access byte (data, ring 0, present)
-    db 0xCF
-    db 0x00
-
-gdt_end:
-
-gdtr:
-    dw gdt_end - gdt_start - 1   ; Size of GDT (limit = size - 1)
-    dd gdt_start                 ; Address of GDT in memory
-
-
-global load_gdt
-load_gdt:
-    lgdt [gdtr]                  ; Load address & size of GDT into CPU
-
-    ; Reload segment registers with new GDT entries
-    mov ax, 0x10                 ; Data segment selector (index 2 = gdt_data)
+    mov ax, 0x10                 ; kernel data selector
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
     mov ss, ax
 
-    ;jump to reload CS with selector 0x08
-    jmp 0x08:flush
-flush:
+    ; CS cannot be loaded with a mov; a far jump is the only way to make the
+    ; new code descriptor take effect.
+    jmp 0x08:.flush
+.flush:
     ret
+
+global tss_flush
+tss_flush:
+    mov eax, [esp + 4]
+    ltr ax
+    ret
+
+; Called from boot.s before the C world exists. The real table is installed
+; later by gdt_init(); this only needs to get the CPU off GRUB's GDT, which we
+; do not own and which GRUB is free to reuse once it hands over.
+global load_gdt
+load_gdt:
+    lgdt [boot_gdtr]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    jmp 0x08:.flush
+.flush:
+    ret
+
+section .data
+align 8
+boot_gdt:
+    dq 0
+    ; 0x08 flat ring-0 code, 0x10 flat ring-0 data
+    dw 0xFFFF, 0x0000
+    db 0x00, 0x9A, 0xCF, 0x00
+    dw 0xFFFF, 0x0000
+    db 0x00, 0x92, 0xCF, 0x00
+boot_gdt_end:
+
+boot_gdtr:
+    dw boot_gdt_end - boot_gdt - 1
+    dd boot_gdt
 
 section .note.GNU-stack noalloc noexec nowrite progbits

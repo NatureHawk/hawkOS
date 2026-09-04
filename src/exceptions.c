@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include "console.h"
 #include "idt.h"
+#include "header/proc.h"
+#include "header/task.h"
+#include "header/kprintf.h"
 
 extern void isr0(void);  extern void isr1(void);  extern void isr2(void);  extern void isr3(void);
 extern void isr4(void);  extern void isr5(void);  extern void isr6(void);  extern void isr7(void);
@@ -39,7 +42,20 @@ void exceptions_init(void){
   for(int i=0;i<32;i++) set_gate(i,(uint32_t)v[i]);
 }
 
-void isr_handler_c(uint32_t n, uint32_t err){
+void isr_handler_c(uint32_t n, uint32_t err, uint32_t cs){
+  // A fault carrying a ring-3 code selector came from a user process. That is
+  // not a system failure -- it is the privilege boundary doing its job -- so
+  // the process dies and the machine carries on. Halting here instead would
+  // mean any user program could take the whole system down by dereferencing a
+  // null pointer, which would make the boundary pointless.
+  if ((cs & 3) == 3){
+    uint32_t cr2 = 0;
+    if (n == 14) __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+    kprintf("[fault] %s in pid %u (err=%x, addr=%p) - process terminated\n",
+            exn_name[n], task_current_id(), err, (void*)cr2);
+    proc_exit(-1);          // does not return
+  }
+
   console_puts("\n[EXCEPTION] ");
   console_puts(exn_name[n]);
   console_puts(" (#"); put_dec(n); console_puts(") err="); put_hex(err); console_puts("\n");

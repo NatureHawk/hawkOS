@@ -17,11 +17,18 @@
 #include "header/kheap.h"
 #include "header/kprintf.h"
 #include "header/irqctl.h"
+#include "header/paging.h"
+#include "header/gdt.h"
 
 extern volatile unsigned long long ticks;
 
 extern void task_switch(uint32_t* save_slot, uint32_t new_esp);
 extern void task_trampoline(void);
+
+// Defined in proc.c. Declared here rather than pulled in through proc.h so
+// the scheduler does not gain a dependency on the whole process interface for
+// one notification.
+void proc_note_switch(uint32_t pid);
 
 static task_t   tasks[TASK_MAX];
 static int      current   = 0;
@@ -52,6 +59,7 @@ void task_init(void){
     tasks[0].stack_base = 0;            // boot stack: not heap, never freed
     tasks[0].slices     = 0;
     tasks[0].esp        = 0;
+    tasks[0].page_dir   = paging_kernel_dir();
     name_copy(tasks[0].name, "kernel");
     current = 0;
 
@@ -89,6 +97,7 @@ int task_create(const char* name, task_fn_t fn, void* arg){
     t->wake_tick  = 0;
     t->stack_base = stack;
     t->slices     = 0;
+    t->page_dir   = paging_kernel_dir();   // a user process replaces this later
     name_copy(t->name, name);
 
     irq_restore(f);
@@ -136,6 +145,16 @@ static void schedule(void){
     nxt->state = TASK_RUNNING;
     nxt->slices++;
     current = next;
+
+    // Everything that has to be true before the next task's first instruction:
+    // its address space loaded, and the TSS pointing at its kernel stack so a
+    // trap out of ring 3 lands somewhere it owns. Both are skipped when the
+    // address space is unchanged, because reloading CR3 flushes the TLB and
+    // kernel threads share one directory.
+    if (nxt->page_dir && nxt->page_dir != prev->page_dir) paging_switch(nxt->page_dir);
+    if (nxt->stack_base)
+        tss_set_kernel_stack((uint32_t)nxt->stack_base + TASK_STACK_SIZE);
+    proc_note_switch(nxt->id);
 
     task_switch(&prev->esp, nxt->esp);
     // Execution resumes here whenever this task is scheduled again.
@@ -185,6 +204,17 @@ int task_kill(uint32_t id){
 }
 
 uint32_t task_current_id(void){ return tasks[current].id; }
+
+void task_set_address_space(uint32_t page_dir){
+    uint32_t f = irq_save();
+    tasks[current].page_dir = page_dir;
+    irq_restore(f);
+}
+
+uint32_t task_kernel_stack_top(void){
+    if (!tasks[current].stack_base) return 0;   // task 0 runs on the boot stack
+    return (uint32_t)tasks[current].stack_base + TASK_STACK_SIZE;
+}
 
 void task_ps(void){
     static const char* st[] = { "unused", "ready", "running", "sleeping", "zombie" };

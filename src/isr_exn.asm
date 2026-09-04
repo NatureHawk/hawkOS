@@ -3,13 +3,24 @@
 global isr0,isr1,isr2,isr3,isr4,isr5,isr6,isr7,isr8,isr9,isr10,isr11,isr12,isr13,isr14,isr15,isr16,isr17,isr18,isr19,isr20,isr21,isr22,isr23,isr24,isr25,isr26,isr27,isr28,isr29,isr30,isr31
 extern isr_handler_c
 
+; The handler is passed the code selector in force when the fault happened, as
+; well as the vector and error code. Its low two bits are the privilege level,
+; which is what distinguishes "the kernel has a bug" from "a user program did
+; something it is not allowed to do" -- the first has to halt, the second must
+; not.
+;
+; Offsets are from the top of the pusha block: the CPU pushed eip/cs/eflags
+; (and an error code first, for the vectors that have one) before entering.
+
 %macro EXC_NOERR 1
 isr%1:
     pusha
-    push dword 0
+    mov eax,[esp+36]        ; cs
+    push eax
+    push dword 0            ; no error code for this vector
     push dword %1
     call isr_handler_c
-    add esp,8
+    add esp,12
     popa
     iret
 %endmacro
@@ -17,13 +28,15 @@ isr%1:
 %macro EXC_ERR 1
 isr%1:
     pusha
-    mov eax,[esp+32]
+    mov eax,[esp+40]        ; cs
+    push eax
+    mov eax,[esp+36]        ; error code (esp moved by the push above)
     push eax
     push dword %1
     call isr_handler_c
-    add esp,8
+    add esp,12
     popa
-    add esp,4
+    add esp,4               ; discard the error code the CPU pushed
     iret
 %endmacro
 

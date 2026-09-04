@@ -27,10 +27,9 @@ static int starts(const char* s,const char* p){
 }
 
 static void cmd_meminfo(void){
-    uint32_t ram_top   = pmm_ram_top();
-    uint32_t free_kb   = pmm_free_frames() * (PMM_FRAME_SIZE / 1024u);
-    uint32_t total_kb  = ram_top / 1024u;
-    uint32_t used_kb   = total_kb - free_kb;
+    uint32_t total_kb  = pmm_total_kb();
+    uint32_t used_kb   = pmm_used_kb();
+    uint32_t free_kb   = total_kb - used_kb;
 
     size_t heap_used = 0, heap_free = 0;
     kheap_stats(&heap_used, &heap_free);

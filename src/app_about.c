@@ -45,9 +45,9 @@ static void paint(wm_window_t* win){
     ksnprintf(buf, sizeof(buf), "%ux%u 32bpp", gfx_width(), gfx_height());
     row(x + 16, &ry, "Display", buf);
 
-    uint32_t total_kb = pmm_ram_top() / 1024u;
-    uint32_t free_kb  = pmm_free_frames() * (PMM_FRAME_SIZE / 1024u);
-    ksnprintf(buf, sizeof(buf), "%u MB total, %u MB free", total_kb / 1024u, free_kb / 1024u);
+    uint32_t total_kb = pmm_total_kb();
+    uint32_t used_kb  = pmm_used_kb();
+    ksnprintf(buf, sizeof(buf), "%u MB used of %u MB", used_kb / 1024u, total_kb / 1024u);
     row(x + 16, &ry, "Memory", buf);
 
     size_t hu = 0, hf = 0;

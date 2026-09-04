@@ -5,6 +5,11 @@
 *.iso
 *.map
 *.log
+
+# Screenshots are checked in: the README links to them, and they are produced
+# by tools/shot.py rather than by hand, so they are build output that is worth
+# keeping under review.
+!shots/*.png
 iso/
 build/
 .vscode/

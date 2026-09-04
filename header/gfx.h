@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "header/fontprop.h"
 
 #define GFX_RGB(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 #define GFX_TRANSPARENT 0xFFFFFFFFu   // sentinel bg: skip unset pixels instead of painting them
@@ -62,6 +63,18 @@ void     gfx_char16(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);
 uint32_t gfx_text_width(const char* s);
 void     gfx_char16_scaled(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg, int scale);
 void     gfx_text_scaled(uint32_t x, uint32_t y, const char* s, uint32_t fg, uint32_t bg, int scale);
+
+// Proportional anti-aliased text (see header/fontprop.h). `y` is the top of
+// the line box, not the baseline, so callers can lay out lines without
+// knowing a face's metrics. There is no bg parameter: coverage glyphs blend
+// with whatever is already on the surface, which is the point of them. All
+// three return the pen advance in pixels, so measuring and drawing share one
+// code path and can never disagree about how wide a string is.
+uint32_t gfx_pf_char(uint32_t x, uint32_t y, char c, const pf_face_t* f, uint32_t fg);
+uint32_t gfx_pf_text_n(uint32_t x, uint32_t y, const char* s, uint32_t n,
+                       const pf_face_t* f, uint32_t fg);
+uint32_t gfx_pf_width_n(const char* s, uint32_t n, const pf_face_t* f);
+uint32_t gfx_pf_width(const char* s, const pf_face_t* f);
 
 // Shifts the whole framebuffer up by rows_px rows, filling the exposed
 // bottom strip with bg. Used by the text console to scroll.

@@ -1,0 +1,20 @@
+click 944 174
+wait 1
+click 80 290
+wait 2
+shot shots/95-wm-normal.png
+click 608 134
+wait 2
+shot shots/96-wm-max.png
+click 1236 14
+wait 2
+shot shots/97-wm-restored.png
+drag 650 560 940 700
+wait 2
+shot shots/98-wm-resized.png
+drag 350 134 4 300
+wait 2
+shot shots/99-wm-snapleft.png
+drag 200 14 1276 300
+wait 2
+shot shots/100-wm-snapright.png

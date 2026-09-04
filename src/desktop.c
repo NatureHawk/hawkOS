@@ -259,10 +259,13 @@ static void tray_paint(int x, int y, int w, int h){
                  net_link_up() ? "no lease" : "offline", TH_TEXT_MUTED, GFX_TRANSPARENT);
     }
 
-    // Memory used, against the 128 MB budget the project is built to.
-    uint32_t total_kb = pmm_ram_top() / 1024u;
-    uint32_t free_kb  = pmm_free_frames() * (PMM_FRAME_SIZE / 1024u);
-    uint32_t used_pct = total_kb ? ((total_kb - free_kb) * 100u / total_kb) : 0;
+    // Memory used, against the 128 MB budget the project is built to. This
+    // reads pmm_used_kb() rather than the frame count: the frame count cannot
+    // see kmalloc, so a meter built on it sits at whatever the kernel image
+    // reserved at boot and never moves again.
+    uint32_t total_kb = pmm_total_kb();
+    uint32_t used_kb  = pmm_used_kb();
+    uint32_t used_pct = total_kb ? (used_kb * 100u / total_kb) : 0;
 
     int mx = x + COL_MEM;
     ksnprintf(buf, sizeof(buf), "%u%%", used_pct);

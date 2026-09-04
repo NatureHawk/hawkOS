@@ -1,0 +1,19 @@
+click 944 174
+wait 1
+click 80 396
+wait 3
+click 600 117
+wait 1
+type en.wikipedia.org/wiki/Unix_philosophy
+key ret
+wait 70
+shot shots/88-unix-top.png
+wheel 8
+wait 3
+shot shots/89-unix-list.png
+wheel 8
+wait 3
+shot shots/90-unix-quote.png
+wheel 8
+wait 3
+shot shots/91-unix-more.png

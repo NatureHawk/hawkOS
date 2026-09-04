@@ -21,10 +21,17 @@
 
 static uint8_t heap_area[HEAP_SIZE] __attribute__((aligned(16)));
 
+// Padded to 16 bytes so every payload comes back 16-byte aligned. The header
+// sits immediately before the pointer it hands out, so a 12-byte header meant
+// every allocation was 4-byte aligned -- not enough for a uint64_t field in a
+// kmalloc'd struct, and a trap waiting for the first one that appears.
+// Request sizes are rounded to 16 for the same reason: a split block's next
+// header has to land aligned too.
 typedef struct block_header {
     size_t size;                 // usable bytes following this header
     int    free;
     struct block_header* next;
+    uint32_t reserved;           // padding to 16 bytes; not used
 } block_header_t;
 
 static block_header_t* heap_head = 0;
@@ -54,7 +61,7 @@ static void split_block(block_header_t* b, size_t size){
 // plain interrupt-disable is cheaper and simpler here than a real lock.
 void* kmalloc(size_t size){
     if (size == 0) return 0;
-    size = (size + 7u) & ~(size_t)7u;   // 8-byte align
+    size = (size + 15u) & ~(size_t)15u;   // keeps payloads and split headers 16-byte aligned
 
     uint32_t f = irq_save();
     for (block_header_t* b = heap_head; b; b = b->next) {

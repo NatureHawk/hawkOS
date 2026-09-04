@@ -14,3 +14,13 @@ void  pmm_free_frame(void* frame_phys);
 uint32_t pmm_total_frames(void);   // static bitmap capacity (tracking limit)
 uint32_t pmm_free_frames(void);
 uint32_t pmm_ram_top(void);        // highest physical address of detected usable RAM
+
+// What anything reporting system memory to a user should call.
+//
+// Frame counts alone are the wrong answer: the kernel heap is a static array
+// inside the kernel image, so pmm_init() marks the whole of it used before a
+// byte has been handed out, and every dynamic allocation in the system goes
+// through kmalloc, which the frame allocator never sees. A meter built on
+// pmm_free_frames() alone shows the same number from boot to shutdown.
+uint32_t pmm_used_kb(void);
+uint32_t pmm_total_kb(void);

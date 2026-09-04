@@ -8,6 +8,11 @@ OUTBIN = hawkos.bin
 OUTISO = hawkos.iso
 DISKIMG = disk.img
 
+# Naming the format explicitly matters now that the guest writes: with the
+# format left to probing, QEMU refuses writes to block 0 as a safety measure
+# and prints a warning about it on every run.
+DISK = -drive file=$(DISKIMG),format=raw,if=ide,index=0,media=disk
+
 ASFLAGS = -f elf32
 CFLAGS  = -m32 -ffreestanding -fno-stack-protector -fno-pic -O2 -Wall -Wextra -std=gnu11 -I. -I$(INCDIR) -Icompat -Ithird_party/bearssl/inc
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib -z max-page-size=0x1000
@@ -28,6 +33,7 @@ OBJS = \
   $(SRCDIR)/boot.o \
   $(SRCDIR)/kernel.o \
   $(SRCDIR)/gdt.o \
+  $(SRCDIR)/gdt_asm.o \
   $(SRCDIR)/idt.o \
   $(SRCDIR)/pic.o \
   $(SRCDIR)/pit.o \
@@ -56,6 +62,7 @@ OBJS = \
   $(SRCDIR)/task.o\
   $(SRCDIR)/switch.o\
   $(SRCDIR)/font8x16.o\
+  $(SRCDIR)/fontprop.o\
   $(SRCDIR)/kstring.o\
   $(SRCDIR)/wm.o\
   $(SRCDIR)/app_taskman.o\
@@ -72,10 +79,47 @@ OBJS = \
   $(SRCDIR)/bearssl_glue.o\
   $(SRCDIR)/http.o\
   $(SRCDIR)/html.o\
-  $(SRCDIR)/vmmouse.o
+  $(SRCDIR)/css.o\
+  $(SRCDIR)/test_css.o\
+  $(SRCDIR)/vmmouse.o\
+  $(SRCDIR)/ktest.o\
+  $(SRCDIR)/test_kstring.o\
+  $(SRCDIR)/test_mem.o\
+  $(SRCDIR)/test_url.o\
+  $(SRCDIR)/test_html.o\
+  $(SRCDIR)/syscall_asm.o\
+  $(SRCDIR)/syscall.o\
+  $(SRCDIR)/proc.o\
+  $(SRCDIR)/test_fat32.o\
+  $(SRCDIR)/test_proc.o
 
-all: $(OUTISO)
+all: $(OUTISO) user
 iso: $(OUTISO)
+
+# ---------------------------------------------------------------- userland
+#
+# User programs are flat binaries linked at PROC_BASE, built with the same
+# compiler but nothing else in common with the kernel: no kernel headers, no
+# libc, and -nostdlib so nothing is silently linked in. They reach the running
+# system only through int 0x80.
+USERDIR  = user
+USERBINS = $(USERDIR)/hello.bin
+USERCFLAGS = -m32 -ffreestanding -fno-pic -fno-stack-protector -O2 -Wall -Wextra -std=gnu11
+
+$(USERDIR)/%.bin: $(USERDIR)/%.c $(USERDIR)/user.ld
+	$(CC) $(USERCFLAGS) -c $< -o $(USERDIR)/$*.o
+	$(LD) -m elf_i386 -T $(USERDIR)/user.ld -nostdlib --oformat binary -o $@ $(USERDIR)/$*.o
+
+user: $(USERBINS)
+
+# Copies the built user programs onto the FAT32 image so proc_spawn can find
+# them. mcopy comes from mtools and writes into the image without needing root
+# or a loop mount.
+disk-sync: $(USERBINS) $(DISKIMG)
+	@for b in $(USERBINS); do \
+	  n=$$(basename $$b .bin | tr 'a-z' 'A-Z'); \
+	  mcopy -i $(DISKIMG) -o $$b ::$$n.BIN && echo "copied $$b -> $$n.BIN"; \
+	done
 
 # kernel ELF/bin
 $(BEARSSL):
@@ -109,21 +153,38 @@ NETDEV = -netdev user,id=n0 -device rtl8139,netdev=n0
 # boot order tries the hard disk (disk.img) first — which holds a plain FAT32
 # filesystem, not a bootable one — and never reaches the actual ISO.
 run: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) -hda $(DISKIMG) -boot d $(NETDEV) -serial stdio
+	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) -serial stdio
 
 # Same machine with the NIC left out, for testing that the system comes up
 # and stays usable when there is no network at all.
 run-offline: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) -hda $(DISKIMG) -boot d -serial stdio
+	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d -serial stdio
+
+# Boots the kernel straight from QEMU's multiboot loader with "selftest" on
+# the command line, runs the in-kernel test suite, and exits. There is no
+# framebuffer on this path and that is deliberate: the tests are headless and
+# the run has to be something CI can fail on, not a window to watch.
+#
+# isa-debug-exit turns the guest's port write into a process exit code of
+# (value << 1) | 1, so 0x10 becomes 33 for a clean run and 0x11 becomes 35.
+test: $(OUTBIN) $(DISKIMG) disk-sync
+	@timeout 180 qemu-system-i386 -m 128M -kernel $(OUTBIN) -append selftest \
+	  $(DISK) $(NETDEV) -display none -serial stdio \
+	  -device isa-debug-exit,iobase=0xf4,iosize=0x04; \
+	code=$$?; \
+	if [ $$code -eq 33 ]; then echo "--- self-test PASSED"; exit 0; \
+	elif [ $$code -eq 35 ]; then echo "--- self-test FAILED"; exit 1; \
+	elif [ $$code -eq 124 ]; then echo "--- self-test TIMED OUT"; exit 1; \
+	else echo "--- self-test did not report (qemu exit $$code)"; exit 1; fi
 
 run-bin: $(OUTBIN) $(DISKIMG)
-	qemu-system-i386 -m 128M -kernel $(OUTBIN) -hda $(DISKIMG) $(NETDEV) -serial stdio
+	qemu-system-i386 -m 128M -kernel $(OUTBIN) $(DISK) $(NETDEV) -serial stdio
 
 # -serial stdio doesn't reliably reach the terminal under some WSL/terminal
 # setups. This logs the same kprintf output to a file instead — open
 # serial.log in any editor after quitting QEMU.
 run-log: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) -hda $(DISKIMG) -boot d $(NETDEV) -serial file:serial.log
+	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) -serial file:serial.log
 
 # Build rules
 # NASM (ASM → OBJ)
@@ -141,6 +202,21 @@ $(SRCDIR)/idt.o: $(SRCDIR)/idt.c
 $(SRCDIR)/idt_asm.o: $(SRCDIR)/idt.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
+# gdt.o is the C table builder; gdt_asm.o is the lgdt/ltr half that has to be
+# assembly. Both come from files named gdt, so neither can be left to the
+# pattern rules.
+$(SRCDIR)/gdt.o: $(SRCDIR)/gdt.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SRCDIR)/gdt_asm.o: $(SRCDIR)/gdt.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(SRCDIR)/syscall_asm.o: $(SRCDIR)/syscall.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(SRCDIR)/syscall.o: $(SRCDIR)/syscall.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Force isr.o to come from isr.asm (exports irq0_stub/irq1_stub) — do not let
 # this fall back to a stray isr.c, which would collide on irq0_handler_c
 $(SRCDIR)/isr.o: $(SRCDIR)/isr.asm
@@ -151,9 +227,10 @@ $(SRCDIR)/%.o: $(SRCDIR)/%.c
 
 clean:
 	rm -f $(SRCDIR)/*.o $(OUTBIN) $(OUTISO) serial.log
+	rm -f $(USERDIR)/*.o $(USERDIR)/*.bin
 	rm -rf iso
 
-.PHONY: all iso run run-offline run-bin run-log clean bearssl
+.PHONY: all iso run run-offline run-bin run-log test clean bearssl user disk-sync
 
 bearssl:
 	sh tools/build_bearssl.sh

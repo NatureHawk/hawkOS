@@ -4,6 +4,7 @@
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
 
 #define MULTIBOOT_FLAG_MEM   0x001   // mem_lower / mem_upper valid
+#define MULTIBOOT_FLAG_CMDLINE 0x004 // cmdline valid
 #define MULTIBOOT_FLAG_MMAP  0x040   // mmap_addr / mmap_length valid
 #define MULTIBOOT_FLAG_FB    0x1000  // framebuffer_* fields valid
 

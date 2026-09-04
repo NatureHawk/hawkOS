@@ -24,6 +24,10 @@ typedef struct task {
     uint64_t     wake_tick;      // valid while TASK_SLEEPING
     uint8_t*     stack_base;     // kmalloc'd block to free when reaped (0 = kernel task)
     uint32_t     slices;         // timer slices this task has been scheduled for
+    // Physical address of the page directory to run this task under. Kernel
+    // threads all share the kernel's; a task hosting a user process gets its
+    // own, and the scheduler reloads CR3 when it changes.
+    uint32_t     page_dir;
     char         name[TASK_NAME_LEN];
 } task_t;
 
@@ -49,5 +53,14 @@ typedef struct {
 
 int      task_snapshot(task_info_t* out, int max);
 const char* task_state_name(int state);
+
+// Binds the running task to an address space. Called when a task takes
+// ownership of a user process, so that every later switch back to it restores
+// the right CR3.
+void     task_set_address_space(uint32_t page_dir);
+
+// Top of the running task's kernel stack — what the TSS has to point at so a
+// trap from ring 3 lands somewhere this task owns.
+uint32_t task_kernel_stack_top(void);
 
 void     sched_tick(void);                                  // called from the IRQ0 handler

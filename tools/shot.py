@@ -16,6 +16,7 @@ The optional script file holds one directive per line:
     type <text>              literal characters, one key event each
     mouse <x> <y>            move the pointer to guest pixel coordinates
     click <x> <y>            move there, then press+release the left button
+    drag <x0> <y0> <x1> <y1> press at the first point, travel, release at the second
     wheel <n>                scroll n notches; positive is down
     shot <file.png>          capture right now
 """
@@ -227,12 +228,51 @@ class Qmp:
                  events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(0.35)
 
+    def drag(self, x0, y0, x1, y1, steps=10):
+        # Press, travel, release. The intermediate moves are not decoration:
+        # the window manager decides what a drag means from the motion events
+        # it sees while the button is down, so a single jump from start to end
+        # exercises none of the moving, resizing or snapping it does.
+        self.move(x0, y0)
+        time.sleep(0.3)
+        self.cmd("input-send-event",
+                 events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
+        time.sleep(0.2)
+        for i in range(1, steps + 1):
+            self.move(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
+            time.sleep(0.06)
+        time.sleep(0.25)
+        self.cmd("input-send-event",
+                 events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
+        time.sleep(0.4)
+
 
 CHAR_QCODE = {
     " ": "spc", ".": "dot", ",": "comma", "-": "minus", "=": "equal",
     "/": "slash", ";": "semicolon", "'": "apostrophe", "[": "bracket_left",
     "]": "bracket_right", "\\": "backslash", "`": "grave_accent",
 }
+
+# The same keys with shift held. Without these a script cannot type an
+# underscore or a query string, which between them rule out most of the URLs
+# worth pointing the browser at -- a Wikipedia article title is nothing but
+# underscores. Capital letters go through the same path.
+SHIFT_QCODE = {
+    ":": "semicolon", "_": "minus", "?": "slash", "+": "equal",
+    "~": "grave_accent", "{": "bracket_left", "}": "bracket_right",
+    "|": "backslash", '"': "apostrophe", "<": "comma", ">": "dot",
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
+    "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+}
+
+
+def shift_key(qmp, qcode):
+    qmp.cmd("input-send-event", events=[
+        {"type": "key", "data": {"down": True,  "key": {"type": "qcode", "data": "shift"}}},
+        {"type": "key", "data": {"down": True,  "key": {"type": "qcode", "data": qcode}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "shift"}}},
+    ])
 
 
 def type_text(qmp, text):
@@ -241,15 +281,12 @@ def type_text(qmp, text):
             qmp.key(CHAR_QCODE[ch])
         elif ch.isdigit():
             qmp.key(ch)
+        elif ch.isalpha() and ch.islower():
+            qmp.key(ch)
         elif ch.isalpha():
-            qmp.key(ch.lower())
-        elif ch == ":":
-            qmp.cmd("input-send-event", events=[
-                {"type": "key", "data": {"down": True,  "key": {"type": "qcode", "data": "shift"}}},
-                {"type": "key", "data": {"down": True,  "key": {"type": "qcode", "data": "semicolon"}}},
-                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "semicolon"}}},
-                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "shift"}}},
-            ])
+            shift_key(qmp, ch.lower())
+        elif ch in SHIFT_QCODE:
+            shift_key(qmp, SHIFT_QCODE[ch])
         time.sleep(0.03)
 
 
@@ -339,6 +376,9 @@ def main():
                 elif op == "click":
                     x, y = rest.split()
                     qmp.click(int(x), int(y))
+                elif op == "drag":
+                    x0, y0, x1, y1 = rest.split()
+                    qmp.drag(int(x0), int(y0), int(x1), int(y1))
                 elif op == "wheel":
                     qmp.wheel(int(rest))
                 elif op == "shot":

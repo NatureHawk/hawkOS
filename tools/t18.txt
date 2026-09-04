@@ -1,0 +1,21 @@
+click 944 174
+wait 1
+click 80 396
+wait 3
+click 600 117
+wait 1
+type en.wikipedia.org/wiki/Unix_philosophy
+key ret
+wait 70
+wheel 8
+wait 2
+shot shots/101-browser-before.png
+drag 400 54 1276 300
+wait 3
+shot shots/102-browser-snapright.png
+drag 900 14 4 300
+wait 3
+shot shots/103-browser-snapleft.png
+drag 300 14 640 4
+wait 3
+shot shots/104-browser-max.png

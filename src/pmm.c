@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "header/pmm.h"
 #include "header/multiboot.h"
+#include "header/kheap.h"
 #include "header/kprintf.h"
 
 // Static tracking capacity. Sized generously above the 128MB target so real
@@ -35,6 +36,13 @@ static void mark_free(uint32_t frame){
         uint32_t top = (frame + 1) * PMM_FRAME_SIZE;
         if (top > ram_top) ram_top = top;
     }
+}
+
+static void mark_used_range(uint32_t start, uint32_t end){
+    if (end <= start) return;
+    uint32_t f_start = start / PMM_FRAME_SIZE;
+    uint32_t f_end   = (end + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
+    for (uint32_t f = f_start; f < f_end; f++) mark_used(f);
 }
 
 static void mark_free_range(uint64_t start, uint64_t end){
@@ -86,6 +94,29 @@ void pmm_init(uint32_t magic, uint32_t mbi_addr){
     uint32_t k_end   = ((uint32_t)kernel_end + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
     for (uint32_t f = k_start; f < k_end; f++) mark_used(f);
 
+    // And the bootloader's own structures, which live in ordinary RAM the
+    // allocator would otherwise hand straight out.
+    //
+    // This is not hypothetical tidiness. QEMU's multiboot loader places the
+    // info block, the command line and the memory map immediately above the
+    // kernel image -- which is precisely where paging_init()'s page tables
+    // get allocated from, since they are the first thing to ask for frames.
+    // The boot command line was being overwritten before anything could read
+    // it. GRUB happens to put its copies in low memory, which is why this
+    // never showed up when booting the ISO.
+    if (mbi){
+        mark_used_range((uint32_t)mbi, (uint32_t)mbi + (uint32_t)sizeof(*mbi));
+
+        if ((mbi->flags & MULTIBOOT_FLAG_CMDLINE) && mbi->cmdline){
+            const char* s = (const char*)mbi->cmdline;
+            uint32_t n = 0;
+            while (n < 4096u && s[n]) n++;
+            mark_used_range(mbi->cmdline, mbi->cmdline + n + 1);
+        }
+        if ((mbi->flags & MULTIBOOT_FLAG_MMAP) && mbi->mmap_length)
+            mark_used_range(mbi->mmap_addr, mbi->mmap_addr + mbi->mmap_length);
+    }
+
     kprintf("[pmm] %u KB free / %u KB tracked, ram_top=0x%x\n",
             free_count * (PMM_FRAME_SIZE / 1024u),
             MAX_FRAMES * (PMM_FRAME_SIZE / 1024u),
@@ -113,3 +144,18 @@ void pmm_free_frame(void* frame_phys){
 uint32_t pmm_total_frames(void){ return MAX_FRAMES; }
 uint32_t pmm_free_frames(void){ return free_count; }
 uint32_t pmm_ram_top(void){ return ram_top; }
+
+uint32_t pmm_total_kb(void){ return ram_top / 1024u; }
+
+// Frames the allocator still has, plus the part of the kernel heap it already
+// counted as used but that kmalloc has not handed out. Without that second
+// term the figure is frozen at boot -- see the note in header/pmm.h.
+uint32_t pmm_used_kb(void){
+    size_t heap_used = 0, heap_free = 0;
+    kheap_stats(&heap_used, &heap_free);
+
+    uint32_t total_kb = ram_top / 1024u;
+    uint32_t free_kb  = free_count * (PMM_FRAME_SIZE / 1024u)
+                      + (uint32_t)(heap_free / 1024u);
+    return free_kb < total_kb ? total_kb - free_kb : 0;
+}

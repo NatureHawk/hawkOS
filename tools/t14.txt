@@ -1,0 +1,16 @@
+click 944 174
+wait 1
+click 80 396
+wait 3
+click 600 117
+wait 1
+type en.wikipedia.org/wiki/Hello_world_program
+key ret
+wait 70
+shot shots/85-hello-top.png
+wheel 9
+wait 3
+shot shots/86-hello-pre.png
+wheel 7
+wait 3
+shot shots/87-hello-pre2.png

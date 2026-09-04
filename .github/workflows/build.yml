@@ -13,7 +13,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-multilib binutils nasm make \
-            grub-pc-bin grub-efi-amd64-bin xorriso mtools dosfstools
+            grub-pc-bin grub-efi-amd64-bin xorriso mtools dosfstools \
+            qemu-system-x86
 
       # Built as its own step so a failure here is obviously a third-party
       # build problem rather than a kernel one. The kernel target depends on
@@ -23,6 +24,12 @@ jobs:
 
       - name: Build kernel and ISO
         run: make iso
+
+      # The suite runs inside the kernel, on the drivers and allocators it
+      # actually ships, and exits through QEMU's isa-debug-exit device -- so a
+      # failure here is a failed job rather than something to read a log for.
+      - name: Run the in-kernel self-test
+        run: make test
 
       - name: Report image sizes
         run: |

@@ -16,6 +16,10 @@
 #include "header/net.h"
 #include "header/netcfg.h"
 #include "header/task.h"
+#include "header/gdt.h"
+#include "header/syscall.h"
+#include "header/proc.h"
+#include "header/ktest.h"
 #include "serial.h"
 #include "kprintf.h"
 
@@ -39,8 +43,15 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_info) {
     kprintf("HawkOS: hybrid boot (ASM) + kernel (C)\n");
     kprintf("We are in 32-bit protected mode.\n");
 
+    // The real GDT, with ring-3 segments and the TSS, replaces the minimal one
+    // boot.s installed. It has to be in place before the IDT: a gate that
+    // switches privilege is meaningless without a TSS to name the stack.
+    gdt_init();
+
     idt_init();
     exceptions_init();
+    syscall_init();
+    proc_init();
     kprintf("\n[boot] serial online, %s\n", gfx_available() ? "framebuffer online" : "no framebuffer (text lost, serial still live)");
     kprintf("[boot] tick=%u (start)\n", 0u);
 
@@ -66,6 +77,20 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_info) {
     __asm__ __volatile__("sti");
 
     net_init();
+
+    // Mount the disk here rather than leaving it to whichever app happened to
+    // want it first. It used to be mounted lazily by shell_init(), which meant
+    // the filesystem was only available once the Terminal or Files window had
+    // been opened -- fine by accident in the GUI, wrong for anything else that
+    // wants to read a file at startup.
+    shell_init();
+
+    // Booted with "selftest" on the command line: run the tests and exit
+    // instead of coming up. This sits after the drivers are initialised so
+    // tests exercise the real ones, but before DHCP is started, so a run does
+    // not spend eight seconds waiting for a lease it does not need.
+    if (ktest_requested(mb_magic, mb_info)) ktest_exit(ktest_run_all());
+
     if (net_link_up()) task_create("netcfg", netcfg_task, 0);
 
     // With a framebuffer the desktop is the system: the shell lives inside

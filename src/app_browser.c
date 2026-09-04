@@ -56,6 +56,20 @@ typedef struct {
     html_page_t*    page;
     int             scroll;
 
+    // What the current layout was built from, so a resize can rebuild it at
+    // the new width. This is kept rather than inferred from `state` because
+    // state is a transient signal -- BR_READY means "a response just landed",
+    // and on_tick clears it to BR_IDLE the moment it has been laid out, so by
+    // the time a window is resized there is nothing left in it to test.
+    //
+    // It points either at a generated page in .rodata or at this tab's
+    // resp.body, both of which outlive the layout. navigate() clears it for
+    // the duration of a fetch, so it can never be followed into a buffer the
+    // fetch task is replacing.
+    const char*     src;
+    uint32_t        src_len;
+    int             src_plain;
+
     char            history[HISTORY_MAX][URL_MAX];
     int             history_n;
 
@@ -158,6 +172,10 @@ static void layout_tab(browser_t* b, tab_t* t, const char* src, uint32_t len, in
     t->page = html_layout(src, len, w, is_plain);
     t->scroll = 0;
 
+    t->src       = src;
+    t->src_len   = len;
+    t->src_plain = is_plain;
+
     if (t->page && t->page->title[0]){
         strncpy(t->title, t->page->title, sizeof(t->title) - 1);
         t->title[sizeof(t->title) - 1] = 0;
@@ -228,6 +246,11 @@ static void navigate(browser_t* b, const char* url){
 
     strcpy(t->status, "Starting");
     t->state    = BR_LOADING;
+    // The fetch is about to replace resp.body, which is what src points at
+    // for an already-loaded page. Drop it now so a resize arriving mid-fetch
+    // has nothing stale to reflow from; on_tick sets it again on success.
+    t->src      = 0;
+    t->src_len  = 0;
     if (t->page) t->page->refresh[0] = 0;      // do not re-follow a stale refresh
     b->fetch_tab = b->cur;
     b->fetch_go  = 1;
@@ -630,6 +653,44 @@ static void on_click(wm_window_t* win, browser_t* b, int cx, int cy){
     else                                              navigate(b, abs);
 }
 
+// Re-runs layout for every tab that has a body, keeping each tab looking at
+// the same part of its document. Called when the window is resized: the
+// display list holds absolute positions computed for the old width, so
+// without this a resize just clips or strands the text instead of reflowing
+// it. Scroll is carried across as a fraction, because the new page is a
+// different height and the old pixel offset means nothing in it.
+static void relayout_all(browser_t* b, int view_h){
+    for (int i = 0; i < MAX_TABS; i++){
+        tab_t* t = &b->tabs[i];
+        if (!t->used || !t->page || !t->src || !t->src_len) continue;
+        if (t->state == BR_LOADING) continue;      // the fetch task owns resp
+
+        int32_t old_h = t->page->height;
+        int     old_s = t->scroll;
+
+        // The tab label is the user's landmark, not a property of the
+        // layout, so it survives a reflow even though html_layout would
+        // happily set it again from the document.
+        char keep[sizeof(t->title)];
+        strncpy(keep, t->title, sizeof(keep) - 1);
+        keep[sizeof(keep) - 1] = 0;
+
+        layout_tab(b, t, t->src, t->src_len, t->src_plain);
+
+        strncpy(t->title, keep, sizeof(t->title) - 1);
+        t->title[sizeof(t->title) - 1] = 0;
+
+        // Carry the reading position across as a fraction: the reflowed page
+        // is a different height, so the old pixel offset means nothing in it.
+        if (t->page && old_h > 0){
+            t->scroll = (int)(((int64_t)old_s * t->page->height) / old_h);
+            int max = t->page->height - view_h;
+            if (t->scroll > max) t->scroll = max;
+            if (t->scroll < 0)   t->scroll = 0;
+        }
+    }
+}
+
 static void on_tick(browser_t* b){
     for (int i = 0; i < MAX_TABS; i++){
         tab_t* t = &b->tabs[i];
@@ -685,6 +746,15 @@ static void handler(wm_window_t* win, const wm_event_t* ev){
         case WM_EV_KEY:        on_key(b, ev->key); wm_invalidate(); break;
         case WM_EV_MOUSE_DOWN: on_click(win, b, ev->x, ev->y); wm_invalidate(); break;
         case WM_EV_MOUSE_UP:   b->drag_scroll = 0; break;
+
+        case WM_EV_RESIZE:
+            b->view_w = ev->x - SCROLLBAR_W;
+            b->view_h = ev->y - TABBAR_H - TOOLBAR_H - STATUS_H;
+            if (b->view_w < 200) b->view_w = 200;
+            if (b->view_h < 60)  b->view_h = 60;
+            relayout_all(b, b->view_h);
+            wm_invalidate();
+            break;
 
         case WM_EV_MOUSE_MOVE:
             if (b->drag_scroll){

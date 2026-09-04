@@ -14,6 +14,7 @@
 #include "header/paging.h"
 #include "header/font8x8.h"
 #include "header/font.h"
+#include "header/fontprop.h"
 #include "header/kprintf.h"
 
 static uint8_t* fb        = 0;
@@ -315,4 +316,74 @@ void gfx_text_scaled(uint32_t x, uint32_t y, const char* s, uint32_t fg, uint32_
     if (scale < 1) scale = 1;
     uint32_t cx = x;
     while (*s){ gfx_char16_scaled(cx, y, *s++, fg, bg, scale); cx += (uint32_t)(FONT_W * scale); }
+}
+
+// ------------------------------------------- proportional anti-aliased text
+
+// Blends `a`/255 of fg over what is already on the surface. This is the only
+// primitive here that reads the destination back, which is why it does not
+// route through gfx_put_pixel: the read has to come from the same surface the
+// write lands on, and gfx_get_pixel clamps against the framebuffer rather
+// than the active target.
+static inline uint32_t blend_over(uint32_t dst, uint32_t fg, uint32_t a){
+    uint32_t ia = 255u - a;
+    uint32_t r = ((((fg >> 16) & 0xFFu) * a) + (((dst >> 16) & 0xFFu) * ia)) / 255u;
+    uint32_t g = ((((fg >>  8) & 0xFFu) * a) + (((dst >>  8) & 0xFFu) * ia)) / 255u;
+    uint32_t b = (((  fg        & 0xFFu) * a) + ((  dst        & 0xFFu) * ia)) / 255u;
+    return (r << 16) | (g << 8) | b;
+}
+
+static inline const pf_glyph_t* pf_lookup(const pf_face_t* f, char c){
+    unsigned char u = (unsigned char)c;
+    if (u < PF_FIRST || u > PF_LAST) u = '?';
+    return &f->glyphs[u - PF_FIRST];
+}
+
+uint32_t gfx_pf_char(uint32_t x, uint32_t y, char c, const pf_face_t* f, uint32_t fg){
+    const pf_glyph_t* g = pf_lookup(f, c);
+    if (!available || g->w == 0) return g->adv;
+
+    // A glyph's ink can start left of the pen and above the line box (an
+    // italic 'f' does both), so the box test uses the coverage rectangle's
+    // own origin rather than the pen position.
+    int gx = (int)x + g->left;
+    int gy = (int)y + g->top;
+    if (gx + g->w <= (int)clip_x0 || gx >= (int)clip_x1) return g->adv;
+    if (gy + g->h <= (int)clip_y0 || gy >= (int)clip_y1) return g->adv;
+
+    const uint8_t* cov = f->cov + g->off;
+    for (uint32_t ry = 0; ry < g->h; ry++){
+        int py = gy + (int)ry;
+        if (py < (int)clip_y0 || py >= (int)clip_y1) continue;
+        uint32_t*      d = (uint32_t*)(dst_base + (uint32_t)py * dst_pitch);
+        const uint8_t* s = cov + ry * g->w;
+        for (uint32_t cx = 0; cx < g->w; cx++){
+            uint32_t a = s[cx];
+            if (!a) continue;
+            int px = gx + (int)cx;
+            if (px < (int)clip_x0 || px >= (int)clip_x1) continue;
+            d[px] = (a >= 255u) ? fg : blend_over(d[px], fg, a);
+        }
+    }
+    return g->adv;
+}
+
+uint32_t gfx_pf_text_n(uint32_t x, uint32_t y, const char* s, uint32_t n,
+                       const pf_face_t* f, uint32_t fg){
+    uint32_t pen = 0;
+    for (uint32_t i = 0; i < n && s[i]; i++)
+        pen += gfx_pf_char(x + pen, y, s[i], f, fg);
+    return pen;
+}
+
+uint32_t gfx_pf_width_n(const char* s, uint32_t n, const pf_face_t* f){
+    uint32_t pen = 0;
+    for (uint32_t i = 0; i < n && s[i]; i++) pen += pf_lookup(f, s[i])->adv;
+    return pen;
+}
+
+uint32_t gfx_pf_width(const char* s, const pf_face_t* f){
+    uint32_t pen = 0;
+    while (*s) pen += pf_lookup(f, *s++)->adv;
+    return pen;
 }

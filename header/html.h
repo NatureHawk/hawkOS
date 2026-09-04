@@ -1,24 +1,72 @@
 #pragma once
 #include <stdint.h>
 #include "header/http.h"
+#include "header/fontprop.h"
 
 // A laid-out page: a flat display list, not a DOM.
 //
-// Nothing here needs a tree. The layout pass walks the markup once, keeping
-// a small style stack, and emits positioned text runs as it goes; painting
-// is then a straight loop over runs that intersect the viewport, and
-// scrolling is a single offset. That is what makes a browser fit in a hobby
-// kernel: the expensive part of a real engine is the part that supports
-// re-layout, and this one simply re-runs the pass when the width changes.
+// Nothing here needs a tree. The layout pass walks the markup once, keeping a
+// style stack, and emits positioned runs as it goes; painting is then a loop
+// over the runs that intersect the viewport, and scrolling is a single
+// offset. That is what makes a browser fit in a hobby kernel: the expensive
+// part of a real engine is the part that supports re-layout, and this one
+// simply re-runs the pass when the width changes.
+
+// Faces the layout can select. This is an enum rather than a pf_face_t*
+// because a run has to stay a plain value type -- the run array is grown by
+// memcpy -- and because HTML_FACE_MONO names the fixed-cell console font,
+// which is not a pf_face_t at all.
+typedef enum {
+    HTML_FACE_BODY = 0,
+    HTML_FACE_BOLD,
+    HTML_FACE_ITALIC,
+    HTML_FACE_H3,
+    HTML_FACE_H2,
+    HTML_FACE_H1,
+    HTML_FACE_MONO,
+    HTML_FACE_N
+} html_face_t;
+
+// Per-run flags. Only what the painter needs to know that is not implied by
+// the face or the colour.
+#define HTML_RUN_NO_UNDERLINE  0x01   // a link whose CSS said text-decoration: none
 
 typedef struct {
-    int32_t  x, y;          // page coordinates, origin at top-left
+    int32_t  x, y;          // page coordinates; y is the top of the line box
     int32_t  w, h;
-    uint8_t  scale;         // 1 = body text, 2 = heading
+    uint8_t  face;          // html_face_t
+    uint8_t  flags;         // HTML_RUN_*
     int32_t  link;          // index into links[], or -1
     uint32_t color;
     uint32_t off, len;      // slice of the text arena
 } html_run_t;
+
+// Everything on a page that is drawn rather than written: rules, bullets,
+// the shaded ground behind a <pre>, a blockquote's edge, an image's frame.
+//
+// These live in their own array instead of being a variant of html_run_t for
+// one reason that matters: text runs are emitted in increasing y, which is
+// what lets html_paint stop scanning as soon as it passes the bottom of the
+// viewport, and boxes are not -- a <pre> panel is only sized once its closing
+// tag arrives, long after the text inside it was emitted. Keeping them apart
+// preserves the ordering guarantee on the array where it pays for itself.
+//
+// It is also the array table borders and cell shading will be emitted into
+// when tables land, which is why the kind is a byte with room to grow rather
+// than a flag.
+typedef enum {
+    HTML_BOX_RULE = 0,      // <hr>, and the hairline under a major heading
+    HTML_BOX_PANEL,         // the ground behind a <pre>
+    HTML_BOX_BAR,           // a blockquote's left edge
+    HTML_BOX_BULLET,        // an unordered-list marker
+    HTML_BOX_FRAME          // an image placeholder's border
+} html_box_kind_t;
+
+typedef struct {
+    int32_t  x, y, w, h;
+    uint8_t  kind;          // html_box_kind_t
+    uint32_t color;
+} html_box_t;
 
 typedef struct {
     int32_t x, y, w, h;
@@ -31,6 +79,8 @@ typedef struct {
     uint32_t     text_len, text_cap;
     html_run_t*  runs;
     uint32_t     run_n, run_cap;
+    html_box_t*  boxes;
+    uint32_t     box_n, box_cap;
     html_link_t* links;
     uint32_t     link_n, link_cap;
     int32_t      height;
