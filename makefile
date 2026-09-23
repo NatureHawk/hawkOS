@@ -56,6 +56,7 @@ OBJS = \
   $(SRCDIR)/gfx.o\
   $(SRCDIR)/font8x8.o\
   $(SRCDIR)/mouse.o\
+  $(SRCDIR)/theme.o\
   $(SRCDIR)/desktop.o\
   $(SRCDIR)/ata.o\
   $(SRCDIR)/fat32.o\
@@ -186,6 +187,16 @@ run-bin: $(OUTBIN) $(DISKIMG)
 run-log: $(OUTISO) $(DISKIMG)
 	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) -serial file:serial.log
 
+# Every object depends on every header.
+#
+# Coarse on purpose: a proper dependency scan needs -MMD and a generated
+# include file, and this project has one directory of headers that changes
+# rarely. Getting it wrong is expensive in a way that a few seconds of
+# recompiling is not -- editing the shared palette in header/theme.h and
+# rebuilding used to leave every app linked against the previous colours,
+# which looks exactly like a bug in the code that was just changed.
+HEADERS = $(wildcard $(INCDIR)/*.h) $(wildcard *.h)
+
 # Build rules
 # NASM (ASM → OBJ)
 $(SRCDIR)/%.o: $(SRCDIR)/%.asm
@@ -195,7 +206,7 @@ $(SRCDIR)/boot.o: $(SRCDIR)/boot.s
 	$(AS) $(ASFLAGS) $< -o $@
 
 # Force idt.o to come from idt.c (exports idt_init, set_gate)
-$(SRCDIR)/idt.o: $(SRCDIR)/idt.c
+$(SRCDIR)/idt.o: $(SRCDIR)/idt.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Force idt_asm.o to come from idt.asm (exports idt_load, maybe isr_stub)
@@ -205,7 +216,7 @@ $(SRCDIR)/idt_asm.o: $(SRCDIR)/idt.asm
 # gdt.o is the C table builder; gdt_asm.o is the lgdt/ltr half that has to be
 # assembly. Both come from files named gdt, so neither can be left to the
 # pattern rules.
-$(SRCDIR)/gdt.o: $(SRCDIR)/gdt.c
+$(SRCDIR)/gdt.o: $(SRCDIR)/gdt.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SRCDIR)/gdt_asm.o: $(SRCDIR)/gdt.asm
@@ -214,7 +225,7 @@ $(SRCDIR)/gdt_asm.o: $(SRCDIR)/gdt.asm
 $(SRCDIR)/syscall_asm.o: $(SRCDIR)/syscall.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(SRCDIR)/syscall.o: $(SRCDIR)/syscall.c
+$(SRCDIR)/syscall.o: $(SRCDIR)/syscall.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Force isr.o to come from isr.asm (exports irq0_stub/irq1_stub) — do not let
@@ -222,7 +233,7 @@ $(SRCDIR)/syscall.o: $(SRCDIR)/syscall.c
 $(SRCDIR)/isr.o: $(SRCDIR)/isr.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(SRCDIR)/%.o: $(SRCDIR)/%.c
+$(SRCDIR)/%.o: $(SRCDIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

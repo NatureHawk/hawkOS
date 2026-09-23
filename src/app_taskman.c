@@ -85,12 +85,17 @@ static void paint(wm_window_t* win, taskman_t* t){
     ry += HEAD_H + 4;
 
     for (int i = 0; i < t->app_n && ry + ROW_H <= limit; i++, row++){
-        if (row == t->selected)
+        // Every colour on a selected row switches together. The selection is
+        // a solid fill, so a cell that kept its own colour -- an accent, a
+        // muted grey -- ends up unreadable on top of it.
+        int on = (row == t->selected);
+        if (on)
             gfx_fill_rect((uint32_t)(x + 4), (uint32_t)(ry - 2), (uint32_t)(w - 8), ROW_H, WM_COL_SEL);
+        uint32_t fg = on ? TH_SELECT_TEXT : TH_TEXT;
 
         int self = (t->apps[i].id == t->self_id);
         gfx_text((uint32_t)(x + 12), (uint32_t)ry, t->apps[i].title,
-                 self ? TH_TEXT_MUTED : (t->apps[i].focused ? TH_ACCENT : TH_TEXT),
+                 on ? fg : (self ? TH_TEXT_MUTED : (t->apps[i].focused ? TH_ACCENT : TH_TEXT)),
                  GFX_TRANSPARENT);
 
         const char* st = t->apps[i].minimized ? "minimised"
@@ -98,10 +103,10 @@ static void paint(wm_window_t* win, taskman_t* t){
                        : t->apps[i].focused   ? "focused" : "open";
         gfx_fill_rect((uint32_t)(x + 210), (uint32_t)(ry + 4), 8, 8,
                       t->apps[i].minimized ? TH_TEXT_DIM : TH_OK);
-        gfx_text((uint32_t)(x + 224), (uint32_t)ry, st, WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+        gfx_text((uint32_t)(x + 224), (uint32_t)ry, st, fg, GFX_TRANSPARENT);
 
         ksnprintf(line, sizeof(line), "%dx%d", t->apps[i].w, t->apps[i].h);
-        gfx_text((uint32_t)(x + 320), (uint32_t)ry, line, WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+        gfx_text((uint32_t)(x + 320), (uint32_t)ry, line, fg, GFX_TRANSPARENT);
 
         ry += ROW_H;
     }
@@ -118,24 +123,25 @@ static void paint(wm_window_t* win, taskman_t* t){
     }
 
     for (int i = 0; i < t->task_n && ry + ROW_H <= limit; i++, row++){
-        if (row == t->selected)
+        int on = (row == t->selected);
+        if (on)
             gfx_fill_rect((uint32_t)(x + 4), (uint32_t)(ry - 2), (uint32_t)(w - 8), ROW_H, WM_COL_SEL);
+        uint32_t fg = on ? TH_SELECT_TEXT : TH_TEXT;
 
         ksnprintf(line, sizeof(line), "%u", t->rows[i].id);
-        gfx_text((uint32_t)(x + 12), (uint32_t)ry, line, WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+        gfx_text((uint32_t)(x + 12), (uint32_t)ry, line, fg, GFX_TRANSPARENT);
 
-        // The running task is marked with the accent colour. It used to use
-        // the title-bar colour, which is nearly the selection colour under
-        // the dark theme and left the name unreadable on the selected row.
+        // The running task is marked with the accent colour, except on the
+        // selected row: the accent and the selection fill are the same blue.
         gfx_text((uint32_t)(x + 56), (uint32_t)ry, t->rows[i].name,
-                 t->rows[i].is_current ? TH_ACCENT : TH_TEXT, GFX_TRANSPARENT);
+                 on ? fg : (t->rows[i].is_current ? TH_ACCENT : TH_TEXT), GFX_TRANSPARENT);
 
         gfx_fill_rect((uint32_t)(x + 210), (uint32_t)(ry + 4), 8, 8, state_colour(t->rows[i].state));
         gfx_text((uint32_t)(x + 224), (uint32_t)ry, task_state_name(t->rows[i].state),
-                 WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+                 fg, GFX_TRANSPARENT);
 
         ksnprintf(line, sizeof(line), "%u", t->rows[i].slices);
-        gfx_text((uint32_t)(x + 320), (uint32_t)ry, line, WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+        gfx_text((uint32_t)(x + 320), (uint32_t)ry, line, fg, GFX_TRANSPARENT);
 
         ry += ROW_H;
     }
@@ -254,7 +260,7 @@ void app_taskman_open(void){
     if (!t) return;
     memset(t, 0, sizeof(*t));
 
-    wm_window_t* win = wm_open("Task Manager", 180, 120, 470, 440, handler, t);
+    wm_window_t* win = wm_open("Activity Monitor", 180, 120, 470, 440, handler, t);
     if (!win){ kfree(t); return; }
     t->self_id = win->id;
     refresh(t);

@@ -43,22 +43,29 @@
 // viewports get margins rather than longer lines.
 #define MAX_LINE_W     700
 
-// Pages are re-coloured for the dark theme rather than rendered on white. A
-// browser that punched a bright rectangle into a dark desktop every time it
-// loaded a page would be the one thing on screen you could not look at.
-#define COL_BODY       GFX_RGB(0xD6, 0xDD, 0xE6)
-#define COL_HEAD       GFX_RGB(0xFF, 0xFF, 0xFF)
+// Pages are re-coloured into the system's appearance rather than rendered on
+// their own background. A browser that punched a bright white rectangle into
+// a dark desktop every time it loaded a page would be the one thing on screen
+// nobody could look at, and the same is true in reverse -- so every one of
+// these is a field of the shared palette, and switching appearance recolours
+// the page along with everything else.
+#define COL_BODY       TH_PAGE_TEXT
+#define COL_HEAD       TH_PAGE_HEAD
 #define COL_LINK       TH_LINK
-#define COL_QUOTE      GFX_RGB(0x9A, 0xA6, 0xB4)
-#define COL_RULE       GFX_RGB(0x2E, 0x39, 0x47)
-#define COL_RULE_HEAD  GFX_RGB(0x3A, 0x47, 0x58)
-#define COL_BAR        GFX_RGB(0x3E, 0x5A, 0x74)
-#define COL_BULLET     GFX_RGB(0x7E, 0x8C, 0x9C)
-#define COL_PANEL      GFX_RGB(0x11, 0x16, 0x1C)
-#define COL_CODE       GFX_RGB(0xB9, 0xD8, 0xB0)
-#define COL_FRAME      GFX_RGB(0x33, 0x40, 0x4E)
-#define COL_FRAME_BG   GFX_RGB(0x13, 0x18, 0x20)
-#define COL_ALT        GFX_RGB(0x74, 0x82, 0x92)
+#define COL_QUOTE      TH_PAGE_MUTED
+#define COL_RULE       TH_PAGE_RULE
+#define COL_RULE_HEAD  TH_PAGE_RULE
+#define COL_BAR        TH_ACCENT_DIM
+#define COL_BULLET     TH_PAGE_MUTED
+#define COL_PANEL      TH_PAGE_PANEL
+#define COL_CODE       TH_PAGE_CODE
+#define COL_FRAME      TH_PAGE_FRAME
+#define COL_FRAME_BG   TH_PAGE_FRAME_BG
+#define COL_ALT        TH_PAGE_MUTED
+#define COL_FIELD      TH_PAGE_FIELD
+#define COL_FIELD_BG   TH_PAGE_FIELD_BG
+#define COL_BUTTON     TH_PAGE_BUTTON
+#define COL_BUTTON_BG  TH_PAGE_BUTTON_BG
 
 // ------------------------------------------------------------------- faces
 
@@ -150,16 +157,93 @@ static int links_grow(html_page_t* p){
 
 // ---------------------------------------------------------------- entities
 
-typedef struct { const char* name; char ch; } entity_t;
+// Named entities carry a code point rather than a character, so that the
+// named and numeric forms of the same thing go through one table of
+// substitutions instead of two that can disagree. &uuml; and &#252; are the
+// same character and used to render differently: one folded to 'u', the
+// other printed literally, because the name was simply missing here.
+typedef struct { const char* name; uint16_t cp; } entity_t;
 
 static const entity_t ENTITIES[] = {
-    { "amp",   '&'  }, { "lt",    '<'  }, { "gt",    '>'  },
-    { "quot",  '"'  }, { "apos",  '\'' }, { "nbsp",  ' '  },
-    { "mdash", '-'  }, { "ndash", '-'  }, { "hellip",'.'  },
-    { "lsquo", '\'' }, { "rsquo", '\'' }, { "ldquo", '"'  }, { "rdquo", '"' },
-    { "middot",'-'  }, { "times", 'x'  }, { "copy",  'c'  },
+    { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' },
+    { "apos", 0x27 }, { "nbsp", 0xA0 }, { "shy", 0xAD }, { "ensp", 0x2002 },
+    { "emsp", 0x2003 }, { "thinsp", 0x2009 }, { "zwnj", 0x200C }, { "zwj", 0x200D },
+
+    { "mdash", 0x2014 }, { "ndash", 0x2013 }, { "minus", 0x2212 },
+    { "hellip", 0x2026 }, { "bull", 0x2022 }, { "middot", 0xB7 },
+    { "lsquo", 0x2018 }, { "rsquo", 0x2019 }, { "sbquo", 0x201A },
+    { "ldquo", 0x201C }, { "rdquo", 0x201D }, { "bdquo", 0x201E },
+    { "laquo", 0xAB }, { "raquo", 0xBB }, { "prime", 0x2032 }, { "Prime", 0x2033 },
+    { "times", 0xD7 }, { "divide", 0xF7 }, { "deg", 0xB0 }, { "plusmn", 0xB1 },
+    { "copy", 0xA9 }, { "reg", 0xAE }, { "trade", 0x2122 }, { "sect", 0xA7 },
+    { "para", 0xB6 }, { "dagger", 0x2020 }, { "euro", 0x20AC }, { "pound", 0xA3 },
+    { "yen", 0xA5 }, { "cent", 0xA2 }, { "larr", 0x2190 }, { "rarr", 0x2192 },
+
+    // Latin-1 letters. These are the reason the table grew: European place
+    // names and surnames are full of them, and a missing entry leaves the
+    // literal "&uuml;" sitting in the middle of a word.
+    { "Agrave", 0xC0 }, { "Aacute", 0xC1 }, { "Acirc", 0xC2 }, { "Atilde", 0xC3 },
+    { "Auml", 0xC4 }, { "Aring", 0xC5 }, { "AElig", 0xC6 }, { "Ccedil", 0xC7 },
+    { "Egrave", 0xC8 }, { "Eacute", 0xC9 }, { "Ecirc", 0xCA }, { "Euml", 0xCB },
+    { "Igrave", 0xCC }, { "Iacute", 0xCD }, { "Icirc", 0xCE }, { "Iuml", 0xCF },
+    { "ETH", 0xD0 }, { "Ntilde", 0xD1 }, { "Ograve", 0xD2 }, { "Oacute", 0xD3 },
+    { "Ocirc", 0xD4 }, { "Otilde", 0xD5 }, { "Ouml", 0xD6 }, { "Oslash", 0xD8 },
+    { "Ugrave", 0xD9 }, { "Uacute", 0xDA }, { "Ucirc", 0xDB }, { "Uuml", 0xDC },
+    { "Yacute", 0xDD }, { "THORN", 0xDE }, { "szlig", 0xDF },
+    { "agrave", 0xE0 }, { "aacute", 0xE1 }, { "acirc", 0xE2 }, { "atilde", 0xE3 },
+    { "auml", 0xE4 }, { "aring", 0xE5 }, { "aelig", 0xE6 }, { "ccedil", 0xE7 },
+    { "egrave", 0xE8 }, { "eacute", 0xE9 }, { "ecirc", 0xEA }, { "euml", 0xEB },
+    { "igrave", 0xEC }, { "iacute", 0xED }, { "icirc", 0xEE }, { "iuml", 0xEF },
+    { "eth", 0xF0 }, { "ntilde", 0xF1 }, { "ograve", 0xF2 }, { "oacute", 0xF3 },
+    { "ocirc", 0xF4 }, { "otilde", 0xF5 }, { "ouml", 0xF6 }, { "oslash", 0xF8 },
+    { "ugrave", 0xF9 }, { "uacute", 0xFA }, { "ucirc", 0xFB }, { "uuml", 0xFC },
+    { "yacute", 0xFD }, { "thorn", 0xFE }, { "yuml", 0xFF },
 };
 #define ENTITY_N ((int)(sizeof(ENTITIES) / sizeof(ENTITIES[0])))
+
+// Maps a code point to the nearest character the font tables can actually
+// draw, or 0 for "leave it out entirely".
+//
+// Dropping is the half that matters. The tables cover ASCII, so a Devanagari
+// or CJK word used to arrive as a row of question marks -- which is wider
+// than the text it replaced, says nothing except that the renderer gave up,
+// and is what turned Google's list of languages into a wall of '?'. Latin
+// letters keep their base form, the punctuation that shows up in ordinary
+// prose is folded onto its ASCII equivalent, and everything else disappears.
+static char uni_to_ascii(uint32_t v){
+    if (v >= 32 && v < 127) return (char)v;
+    switch (v){
+        case 0x00A0: case 0x2002: case 0x2003: case 0x2009:
+        case 0x200A: case 0x202F: return ' ';
+        case 0x00AD: case 0x200B: case 0x200C: case 0x200D:
+        case 0xFEFF:              return 0;
+        case 0x2018: case 0x2019: case 0x201A: case 0x2032: return '\'';
+        case 0x201C: case 0x201D: case 0x201E: case 0x00AB:
+        case 0x00BB: case 0x2033: return '"';
+        case 0x2010: case 0x2011: case 0x2012: case 0x2013:
+        case 0x2014: case 0x2015: case 0x2212: case 0x00B7:
+        case 0x2022: case 0x25AA: return '-';
+        case 0x2026: return '.';
+        case 0x00D7: return 'x';
+        case 0x00A9: return 'c';
+        case 0x00AE: return 'r';
+        case 0x00B0: return 'o';
+        case 0x20AC: return 'E';
+        case 0x00A3: return 'L';
+        case 0x00A5: return 'Y';
+        case 0x2190: return '<';
+        case 0x2192: case 0x27A4: return '>';
+        default: break;
+    }
+    // Latin-1 letters folded to their base letter: "Zurich" is a better
+    // rendering of an umlauted Zurich than "Z?rich" is. Two rows of 32,
+    // covering C0-DF and E0-FF.
+    static const char L1[] =
+        "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPs"
+        "aaaaaaaceeeeiiiidnooooo/ouuuuypy";
+    if (v >= 0xC0 && v <= 0xFF) return L1[v - 0xC0];
+    return 0;
+}
 
 // Decodes one entity starting at src[0] == '&'. Returns bytes consumed, and
 // writes the replacement to *out (0 means "drop it").
@@ -193,13 +277,13 @@ static uint32_t decode_entity(const char* src, uint32_t avail, char* out){
                 v = v * 10 + (uint32_t)(c - '0');
             }
         }
-        *out = (v >= 32 && v < 127) ? (char)v : ((v == 160) ? ' ' : '?');
+        *out = uni_to_ascii(v);
         return i + 1;
     }
 
     for (int e = 0; e < ENTITY_N; e++){
         if (strlen(ENTITIES[e].name) == nlen && strncmp(src + 1, ENTITIES[e].name, nlen) == 0){
-            *out = ENTITIES[e].ch;
+            *out = uni_to_ascii(ENTITIES[e].cp);
             return i + 1;
         }
     }
@@ -247,6 +331,7 @@ typedef struct {
     int   line_h;           // tallest run on the current line
     int   line_asc;         // deepest baseline on the current line
     uint32_t line_first;    // first run index on the current line
+    uint32_t line_box_first;// first box index on the current line
     int   line_started;
     int   pending_space;    // collapsed whitespace waiting to be emitted
 
@@ -266,6 +351,12 @@ typedef struct {
     css_props_t pending;
     int         has_pending;
 
+    // Whether the element those properties belong to is block-level. A
+    // margin only moves the left edge of a block; on an inline element it is
+    // space beside it, and treating the two alike is what used to send the
+    // pen back to the left margin in the middle of a line.
+    int         pending_block;
+
     int   link;             // current link index, or -1
 
     int   ord[8];           // <ol> counters, one per nesting level
@@ -279,6 +370,10 @@ typedef struct {
     int   skipping;
     char  skip_tag[16];
     int   skip_nest;
+
+    // Reader mode off: keep navigation, footers and sidebars. Set when a
+    // first pass produced nothing, which means the heuristics ate the page.
+    int   keep_chrome;
 } lay_t;
 
 static int line_left(lay_t* L){ return L->origin_x + L->sty.indent; }
@@ -291,6 +386,11 @@ static void emit_box(lay_t* L, int kind, int x, int y, int w, int h, uint32_t co
     b->x = x; b->y = y; b->w = w; b->h = h;
     b->kind = (uint8_t)kind;
     b->color = color;
+
+    // Only a box emitted into a line that has already started belongs to that
+    // line and travels with its alignment. Rules, <pre> panels and list
+    // markers sit at block boundaries and must stay where they were put.
+    if (!L->line_started) L->line_box_first = L->p->box_n;
 }
 
 // Baseline-aligns everything on the line just finished. A run's y is the top
@@ -304,12 +404,21 @@ static void align_line(lay_t* L){
     // this happens here rather than at emit time -- the same reason the
     // baseline pass is here.
     int shift = 0;
-    if (L->sty.align != CSS_ALIGN_LEFT && L->p->run_n > L->line_first){
+    if (L->sty.align != CSS_ALIGN_LEFT
+        && (L->p->run_n > L->line_first || L->p->box_n > L->line_box_first)){
         int32_t lo = 0x7FFFFFFF, hi = 0;
         for (uint32_t i = L->line_first; i < L->p->run_n; i++){
             const html_run_t* r = &L->p->runs[i];
             if (r->x < lo) lo = r->x;
             if (r->x + r->w > hi) hi = r->x + r->w;
+        }
+        // Form controls on this line move with the text they belong to; a
+        // centred line whose label shifted and whose button did not would
+        // come apart.
+        for (uint32_t i = L->line_box_first; i < L->p->box_n; i++){
+            const html_box_t* b = &L->p->boxes[i];
+            if (b->x < lo) lo = b->x;
+            if (b->x + b->w > hi) hi = b->x + b->w;
         }
         int avail = line_right(L) - line_left(L);
         int used  = hi - lo;
@@ -323,6 +432,8 @@ static void align_line(lay_t* L){
         r->y += L->line_asc - face_asc(r->face);
         r->x += shift;
     }
+    for (uint32_t i = L->line_box_first; i < L->p->box_n; i++)
+        L->p->boxes[i].x += shift;
 }
 
 static void newline(lay_t* L, int extra){
@@ -334,6 +445,7 @@ static void newline(lay_t* L, int extra){
     L->line_h = 0;
     L->line_asc = 0;
     L->line_first = L->p->run_n;
+    L->line_box_first = L->p->box_n;
     L->line_started = 0;
     L->pending_space = 0;
 }
@@ -346,6 +458,7 @@ static void block_break(lay_t* L, int extra){
         if (extra) L->y += extra;
         L->x = line_left(L);
         L->line_first = L->p->run_n;
+        L->line_box_first = L->p->box_n;
     }
 }
 
@@ -444,11 +557,16 @@ static int sty_has(lay_t* L, const char* tag, uint32_t nlen){
 static void apply_css(lay_t* L, const css_props_t* c){
     if (c->have & CSS_HAS_COLOR) L->sty.color = c->color;
 
-    if (c->have & CSS_HAS_INDENT){
+    // Blocks only, and never in the middle of a line. Both halves of that
+    // guard earn their place: an inline element's margin is not an indent,
+    // and moving the pen to a new left edge with words already on the line
+    // draws the rest of the line straight over them. A stylesheet rule
+    // matching every <a> on Google's homepage is what made that visible.
+    if ((c->have & CSS_HAS_INDENT) && L->pending_block){
         int ind = L->sty.indent + c->indent;
         if (ind < 0) ind = 0;
         L->sty.indent = (int16_t)ind;
-        L->x = line_left(L);
+        if (!L->line_started) L->x = line_left(L);
     }
     if (c->have & CSS_HAS_ALIGN)     L->sty.align = c->align;
     if (c->have & CSS_HAS_UNDERLINE) L->sty.no_underline = (uint8_t)(!c->underline);
@@ -485,6 +603,9 @@ static void sty_pop(lay_t* L, const char* tag, uint32_t nlen){
     if (at < 0) return;
     for (int i = L->depth - 1; i >= at; i--) frame_close(L, &L->stack[i]);
     L->depth = at;
+    // A frame's decoration is emitted at the block boundary its element ends
+    // on, not into whatever line comes next.
+    if (!L->line_started) L->line_box_first = L->p->box_n;
 }
 
 // ------------------------------------------------------------------- tags
@@ -523,7 +644,7 @@ static int tag_attr(const char* attrs, uint32_t len, const char* want,
                 for (uint32_t k = 0; k < n && o < cap - 1; k++){
                     char rep;
                     uint32_t used = decode_entity(attrs + vs + k, n - k, &rep);
-                    if (used){ out[o++] = rep; k += used - 1; }
+                    if (used){ if (rep) out[o++] = rep; k += used - 1; }
                     else out[o++] = attrs[vs + k];
                 }
                 out[o] = 0;
@@ -584,7 +705,8 @@ static int is_chrome_attr(const char* attrs, uint32_t alen){
 static int is_block_tag(const char* t, uint32_t n){
     static const char* B[] = {
         "p","div","br","hr","h1","h2","h3","h4","h5","h6","ul","ol","li",
-        "table","tr","thead","tbody","section","article","header","footer",
+        "table","tr","td","th","thead","tbody","center",
+        "section","article","header","footer",
         "nav","main","aside","blockquote","pre","form","figure","figcaption",
         "dl","dt","dd","address","fieldset","details","summary"
     };
@@ -627,6 +749,68 @@ static void emit_words(lay_t* L, const char* s){
         if (j > i) emit_word(L, s + i, j - i);
         i = j;
     }
+}
+
+// Form controls.
+//
+// Nothing here can be typed into or submitted -- there is no input handling
+// behind these -- but drawing them is not decoration. A search page rendered
+// without its search box looks broken in a way that a page rendered with an
+// inert one does not: the box is most of what tells a reader where they are,
+// and the buttons are where the page's own words for its actions live.
+static void emit_input(lay_t* L, const char* attrs, uint32_t alen){
+    char type[24];
+    if (tag_attr(attrs, alen, "type", type, sizeof(type)) != 0 || !type[0])
+        strncpy(type, "text", sizeof(type) - 1);
+    if (kstricmp(type, "hidden") == 0 || kstricmp(type, "image") == 0) return;
+
+    char label[96];
+    if (tag_attr(attrs, alen, "value", label, sizeof(label)) != 0) label[0] = 0;
+
+    int button = (kstricmp(type, "submit") == 0 || kstricmp(type, "button") == 0
+               || kstricmp(type, "reset")  == 0);
+
+    int face = HTML_FACE_BODY;
+    int h    = face_h(face) + 8;
+    int w;
+
+    if (button){
+        if (!label[0]) strncpy(label, "Submit", sizeof(label) - 1);
+        w = measure(face, label, strlen(label)) + 28;
+    } else {
+        // size= is in characters. Falling back to a fixed width rather than
+        // to the full measure keeps a stray input from claiming the line.
+        int size = attr_int(attrs, alen, "size");
+        w = size > 0 ? size * 8 + 16 : 320;
+        if (!label[0] && tag_attr(attrs, alen, "placeholder", label, sizeof(label)) != 0)
+            label[0] = 0;
+    }
+
+    int avail = line_right(L) - line_left(L);
+    if (w > avail) w = avail;
+    if (L->line_started && L->x + w > line_right(L)) newline(L, 0);
+
+    // A control is one indivisible thing on the line, so the line's metrics
+    // are raised to fit it before the box is emitted -- emit_box needs the
+    // line to be started already to count the box as part of it.
+    if (h > L->line_h) L->line_h = h;
+    if (face_asc(face) > L->line_asc) L->line_asc = face_asc(face);
+    L->line_started  = 1;
+    L->pending_space = 0;
+
+    int x0 = L->x;
+    emit_box(L, button ? HTML_BOX_BUTTON : HTML_BOX_FIELD,
+             x0, L->y - 4, w, h, button ? COL_BUTTON : COL_FIELD);
+
+    if (label[0]){
+        sty_t save = L->sty;
+        if (!button){ L->sty.face = HTML_FACE_ITALIC; L->sty.color = COL_ALT; }
+        L->x = x0 + (button ? 14 : 10);
+        emit_word(L, label, strlen(label));
+        L->sty = save;
+    }
+    L->x = x0 + w + 6;
+    L->pending_space = 0;
 }
 
 // There is no image decoder yet, so an <img> becomes a frame the size the
@@ -732,6 +916,7 @@ static void emit_image(lay_t* L, const char* attrs, uint32_t alen){
     L->y += h + PARA_GAP;
     L->x = line_left(L);
     L->line_first = L->p->run_n;
+    L->line_box_first = L->p->box_n;
     L->line_h = 0;
     L->line_asc = 0;
     L->line_started = 0;
@@ -741,6 +926,18 @@ static void emit_image(lay_t* L, const char* attrs, uint32_t alen){
 // ---------------------------------------------------------------- entry
 
 html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain){
+    return html_layout_ex(src, len, width, is_plain, 0);
+}
+
+uint32_t html_text_len(const html_page_t* p){
+    if (!p) return 0;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < p->run_n; i++) n += p->runs[i].len;
+    return n;
+}
+
+html_page_t* html_layout_ex(const char* src, uint32_t len, int width, int is_plain,
+                            int keep_chrome){
     html_page_t* p = (html_page_t*)kmalloc(sizeof(html_page_t));
     if (!p) return 0;
     memset(p, 0, sizeof(*p));
@@ -749,6 +946,7 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
     memset(&L, 0, sizeof(L));
     L.p = p;
     L.width = width;
+    L.keep_chrome = keep_chrome;
 
     int avail = width - 2 * MARGIN;
     if (avail < 120) avail = 120;
@@ -795,8 +993,28 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                             && src[ne] != '\n' && src[ne] != '\r' && src[ne] != '/') ne++;
             uint32_t nlen = ne - ts;
 
+            // The end of the tag, honouring quoted attribute values.
+            //
+            // Scanning for the first '>' looks obviously right and is not: a
+            // quoted attribute may contain one. Wikipedia's articles carry
+            // their infobox source in data-mw='...', which is JSON full of
+            // wikitext, and cutting the tag at the first '>' inside it dumped
+            // the remainder of that JSON into the article as body text.
             uint32_t te = ne;
-            while (te < len && src[te] != '>') te++;
+            char quote = 0;
+            while (te < len){
+                char tc = src[te];
+                if (quote){ if (tc == quote) quote = 0; }
+                else if (tc == '"' || tc == '\'') quote = tc;
+                else if (tc == '>') break;
+                te++;
+            }
+            // An unbalanced quote would otherwise swallow the rest of the
+            // document, so fall back to the naive scan when that happens.
+            if (te >= len){
+                te = ne;
+                while (te < len && src[te] != '>') te++;
+            }
 
             const char* tag   = src + ts;
             const char* attrs = src + ne;
@@ -838,10 +1056,26 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                     css_parse_inline(inl, strlen(inl), &ip);
                     css_merge(&cp, &ip);      // inline beats the sheet
                 }
+                // The presentational align= attribute. A great many sites
+                // still serve markup of this vintage to a browser whose
+                // user agent they do not recognise, and it is the only thing
+                // those pages say about where their content sits.
+                char al[12];
+                if (tag_attr(attrs, alen, "align", al, sizeof(al)) == 0 && al[0]){
+                    if (kstricmp(al, "center") == 0){ cp.align = CSS_ALIGN_CENTER; cp.have |= CSS_HAS_ALIGN; }
+                    else if (kstricmp(al, "right") == 0){ cp.align = CSS_ALIGN_RIGHT;  cp.have |= CSS_HAS_ALIGN; }
+                    else if (kstricmp(al, "left") == 0){ cp.align = CSS_ALIGN_LEFT;   cp.have |= CSS_HAS_ALIGN; }
+                }
+
                 have_css = cp.have != 0;
             }
-            L.has_pending = 0;
-            if (have_css){ L.pending = cp; L.has_pending = 1; }
+            L.has_pending  = 0;
+            L.pending_block = 0;
+            if (have_css){
+                L.pending       = cp;
+                L.has_pending   = 1;
+                L.pending_block = is_block_tag(tag, nlen);
+            }
 
             // display:none is the page telling us, in its own words, that this
             // subtree is not content. It is a far better signal than the
@@ -859,7 +1093,7 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                 continue;
             }
 
-            if (!closing && src[te - 1] != '/'
+            if (!closing && src[te - 1] != '/' && !L.keep_chrome
                 && (is_chrome_tag(tag, nlen) || is_chrome_attr(attrs, alen))){
                 block_break(&L, 0);
                 L.skipping  = 1;
@@ -920,6 +1154,25 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                 continue;
             }
 
+            if (tag_is(tag, nlen, "input") && !closing){
+                emit_input(&L, attrs, alen);
+                i = (te < len) ? te + 1 : len;
+                continue;
+            }
+
+            // <center> is deprecated and still everywhere. It is the whole
+            // structure of a plain search-engine home page.
+            if (tag_is(tag, nlen, "center")){
+                block_break(&L, 0);
+                if (closing) sty_pop(&L, tag, nlen);
+                else {
+                    sty_push(&L, tag, nlen, DECO_NONE, 0);
+                    L.sty.align = CSS_ALIGN_CENTER;
+                }
+                i = (te < len) ? te + 1 : len;
+                continue;
+            }
+
             if (tag_is(tag, nlen, "img") && !closing){
                 emit_image(&L, attrs, alen);
                 i = (te < len) ? te + 1 : len;
@@ -942,6 +1195,19 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                                 lk->href_off = off;
                                 lk->href_len = strlen(href);
                                 L.link = (int)p->link_n++;
+
+                                // Two links with nothing between them in the
+                                // markup -- a row of footer links, a list of
+                                // languages -- run together into one word.
+                                // Real pages space them with padding on an
+                                // inline element, which this renderer has no
+                                // box model for, so the gap goes in here.
+                                // Only between two links: putting one after
+                                // ordinary text would break "see<a>here</a>",
+                                // where the markup means there to be none.
+                                if (p->run_n && p->runs[p->run_n - 1].link >= 0)
+                                    L.pending_space = 1;
+
                                 sty_push(&L, tag, nlen, DECO_NONE, 0);
                                 L.sty.color = COL_LINK;
                             }
@@ -1182,7 +1448,7 @@ html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain)
                 if (rep == ' '){
                     if (wlen){ emit_word(&L, word, wlen); wlen = 0; }
                     L.pending_space = 1;
-                } else if (wlen < sizeof(word) - 1){
+                } else if (rep && wlen < sizeof(word) - 1){
                     word[wlen++] = rep;
                 }
                 i += used;
@@ -1269,6 +1535,18 @@ void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll
                 gfx_draw_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
                               b->color);
                 break;
+            case HTML_BOX_FIELD:
+                gfx_fill_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
+                              COL_FIELD_BG);
+                gfx_draw_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
+                              b->color);
+                break;
+            case HTML_BOX_BUTTON:
+                gfx_fill_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
+                              COL_BUTTON_BG);
+                gfx_draw_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
+                              b->color);
+                break;
             default:
                 gfx_fill_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
                               b->color);
@@ -1282,9 +1560,12 @@ void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll
 
         // Cheap vertical cull. Text runs are emitted in document order, so
         // once we are past the bottom of the viewport nothing later can be
-        // inside it either.
+        // inside it either -- to within one line box, because baseline
+        // alignment moves a short face down inside its own line and two runs
+        // sharing a line can end up a few pixels apart. The slack is what
+        // keeps the last line on screen from losing half its words.
         if (sy + r->h < vy) continue;
-        if (sy > vy + vh) break;
+        if (sy > vy + vh + HTML_LINE_SLACK) break;
 
         int sx = vx + r->x;
         const char* s = p->text + r->off;

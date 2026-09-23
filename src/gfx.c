@@ -281,6 +281,178 @@ void gfx_draw_circle(int cx, int cy, int r, uint32_t color){
     }
 }
 
+// Defined with the text routines further down, because that is the only
+// other place that reads the destination back; declared here because the
+// translucent chrome primitives came later and need it first.
+static inline uint32_t blend_over(uint32_t dst, uint32_t fg, uint32_t a);
+
+// Integer square root, for the corner arcs. Newton's method from a shift
+// estimate converges in a handful of steps for the radii used here.
+static uint32_t isqrt32(uint32_t n){
+    if (n == 0) return 0;
+    uint32_t x = n, y = (x + 1) / 2;
+    while (y < x){ x = y; y = (x + n / x) / 2; }
+    return x;
+}
+
+// How far in from the edge the fill starts, on a row `d` pixels from the
+// straight part of a corner of radius r.
+static uint32_t corner_inset(uint32_t r, uint32_t d){
+    if (d >= r) return r;
+    return r - isqrt32(r * r - d * d);
+}
+
+uint32_t gfx_round_inset(uint32_t r, uint32_t k){
+    if (r == 0 || k >= r) return 0;
+    return corner_inset(r, r - 1 - k);
+}
+
+void gfx_copy_out(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t* dst){
+    if (!available) return;
+    for (uint32_t row = 0; row < h; row++){
+        uint32_t py = y + row;
+        if (py >= fb_h){ for (uint32_t c = 0; c < w; c++) dst[row * w + c] = 0; continue; }
+        const uint32_t* s = (const uint32_t*)(dst_base + py * dst_pitch);
+        for (uint32_t c = 0; c < w; c++)
+            dst[row * w + c] = (x + c < fb_w) ? s[x + c] : 0;
+    }
+}
+
+void gfx_copy_in(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* src){
+    if (!available) return;
+    for (uint32_t row = 0; row < h; row++){
+        uint32_t py = y + row;
+        if (py >= fb_h) continue;
+        uint32_t* d = (uint32_t*)(dst_base + py * dst_pitch);
+        for (uint32_t c = 0; c < w; c++)
+            if (x + c < fb_w) d[x + c] = src[row * w + c];
+    }
+}
+
+void gfx_blend_pixel(uint32_t x, uint32_t y, uint32_t color, uint32_t a){
+    if (!available || a == 0) return;
+    if (x < clip_x0 || x >= clip_x1 || y < clip_y0 || y >= clip_y1) return;
+    uint32_t* d = (uint32_t*)(dst_base + y * dst_pitch);
+    d[x] = (a >= 255u) ? color : blend_over(d[x], color, a);
+}
+
+void gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    uint32_t color, uint32_t a){
+    if (!available || a == 0) return;
+    if (a >= 255u){ gfx_fill_rect(x, y, w, h, color); return; }
+
+    uint32_t x0 = x < clip_x0 ? clip_x0 : x;
+    uint32_t y0 = y < clip_y0 ? clip_y0 : y;
+    uint32_t x1 = x + w > clip_x1 ? clip_x1 : x + w;
+    uint32_t y1 = y + h > clip_y1 ? clip_y1 : y + h;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (uint32_t py = y0; py < y1; py++){
+        uint32_t* d = (uint32_t*)(dst_base + py * dst_pitch);
+        for (uint32_t px = x0; px < x1; px++) d[px] = blend_over(d[px], color, a);
+    }
+}
+
+void gfx_fill_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                         uint32_t r, uint32_t color){
+    if (w == 0 || h == 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    for (uint32_t row = 0; row < h; row++){
+        uint32_t inset = 0;
+        if (row < r)          inset = corner_inset(r, r - 1 - row);
+        else if (row >= h - r) inset = corner_inset(r, row - (h - r));
+        gfx_fill_rect(x + inset, y + row, w - 2 * inset, 1, color);
+    }
+}
+
+void gfx_blend_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                          uint32_t r, uint32_t color, uint32_t a){
+    if (w == 0 || h == 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    for (uint32_t row = 0; row < h; row++){
+        uint32_t inset = 0;
+        if (row < r)          inset = corner_inset(r, r - 1 - row);
+        else if (row >= h - r) inset = corner_inset(r, row - (h - r));
+        gfx_blend_rect(x + inset, y + row, w - 2 * inset, 1, color, a);
+    }
+}
+
+void gfx_draw_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                         uint32_t r, uint32_t color){
+    if (w < 2 || h < 2) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    for (uint32_t row = 0; row < h; row++){
+        uint32_t inset = 0;
+        if (row < r)          inset = corner_inset(r, r - 1 - row);
+        else if (row >= h - r) inset = corner_inset(r, row - (h - r));
+
+        // Inside the arcs the outline is two single pixels; across the caps
+        // it has to be a span, or the curve comes out as a dotted line
+        // wherever the inset changes by more than one pixel per row.
+        uint32_t prev = inset;
+        if (row > 0 && row < r)           prev = corner_inset(r, r - row);
+        else if (row + 1 < h && row >= h - r) prev = corner_inset(r, row - 1 - (h - r));
+        uint32_t span = (prev > inset) ? prev - inset : 1;
+
+        if (row == 0 || row == h - 1){
+            gfx_fill_rect(x + inset, y + row, w - 2 * inset, 1, color);
+        } else {
+            gfx_fill_rect(x + inset, y + row, span, 1, color);
+            gfx_fill_rect(x + w - inset - span, y + row, span, 1, color);
+        }
+    }
+}
+
+void gfx_shadow(int x, int y, int w, int h, int spread, uint32_t color){
+    if (w <= 0 || h <= 0 || spread <= 0) return;
+
+    // The whole stack is shifted down, as a light source above the screen
+    // would put it. It is one offset for every ring rather than one that
+    // grows with the ring, because rings that move apart at different rates
+    // leave gaps between them and the shadow comes out as stripes.
+    int bias = spread / 3;
+
+    for (int i = 0; i < spread; i++){
+        // Quadratic falloff, so the ring against the window carries most of
+        // the weight and the outer ones fade rather than ending in a line.
+        uint32_t a = (uint32_t)(58 * (spread - i) * (spread - i)) / (uint32_t)(spread * spread);
+        if (!a) continue;
+
+        int o  = i + 1;
+        int rx = x - o, ry = y - o + bias;
+        int rw = w + 2 * o, rh = h + 2 * o;
+
+        gfx_blend_rect((uint32_t)rx, (uint32_t)ry, (uint32_t)rw, 1, color, a);
+        gfx_blend_rect((uint32_t)rx, (uint32_t)(ry + rh - 1), (uint32_t)rw, 1, color, a);
+        gfx_blend_rect((uint32_t)rx, (uint32_t)ry, 1, (uint32_t)rh, color, a);
+        gfx_blend_rect((uint32_t)(rx + rw - 1), (uint32_t)ry, 1, (uint32_t)rh, color, a);
+    }
+}
+
+void gfx_mgradient(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                   const uint32_t* stops, uint32_t n){
+    if (!available || h == 0 || n == 0) return;
+    if (n == 1){ gfx_fill_rect(x, y, w, h, stops[0]); return; }
+
+    for (uint32_t row = 0; row < h; row++){
+        // Which segment this row falls in, and how far along it. Kept in
+        // integers scaled by the height so there is no division per channel.
+        uint32_t pos  = row * (n - 1);
+        uint32_t seg  = pos / h;
+        uint32_t frac = pos - seg * h;
+        if (seg >= n - 1){ seg = n - 2; frac = h; }
+
+        uint32_t a = stops[seg], b = stops[seg + 1];
+        uint32_t r = (((a >> 16) & 0xFF) * (h - frac) + ((b >> 16) & 0xFF) * frac) / h;
+        uint32_t g = (((a >>  8) & 0xFF) * (h - frac) + ((b >>  8) & 0xFF) * frac) / h;
+        uint32_t bl = ((a & 0xFF) * (h - frac) + (b & 0xFF) * frac) / h;
+        gfx_fill_rect(x, y + row, w, 1, GFX_RGB(r, g, bl));
+    }
+}
+
 void gfx_vgradient(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t top, uint32_t bot){
     if (h == 0) return;
     int r0 = (int)((top >> 16) & 0xFF), g0 = (int)((top >> 8) & 0xFF), b0 = (int)(top & 0xFF);

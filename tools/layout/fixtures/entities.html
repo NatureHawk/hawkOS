@@ -1,0 +1,19 @@
+<!doctype html>
+<title>Entity folding</title>
+<!--
+  Characters outside the font tables used to arrive as '?'. A line of those
+  is wider than the text it replaced and says nothing, so anything with no
+  glyph is now dropped and the Latin letters and common punctuation are
+  folded onto their ASCII equivalents instead.
+
+  Expected: the Devanagari and CJK lines contribute no text at all, the
+  accented line reads "Zurich cafe naive Ubungen", and the punctuation line
+  keeps its quotes, dashes and ellipsis.
+-->
+<body>
+<p>&#2361;&#2367;&#2344;&#2381;&#2342;&#2368; &#3108;&#3142;&#3122;&#3137;&#3095;&#3137;</p>
+<p>&#x4E2D;&#x6587; &#x65E5;&#x672C;&#x8A9E;</p>
+<p>Z&uuml;rich caf&eacute; na&iuml;ve &Uuml;bungen</p>
+<p>&ldquo;quoted&rdquo; &mdash; spaced&nbsp;out &hellip; and&#8217;s</p>
+<p>&copy; 2026 &middot; 5 &times; 3</p>
+</body>

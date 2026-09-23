@@ -13,6 +13,7 @@
 #include "header/mouse.h"
 #include "header/shell.h"
 #include "header/desktop.h"
+#include "header/theme.h"
 #include "header/net.h"
 #include "header/netcfg.h"
 #include "header/task.h"
@@ -36,6 +37,7 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_info) {
 
     pmm_init(mb_magic, mb_info);
     paging_init();
+    theme_init();                  // before anything reads a colour out of the palette
     gfx_init(mb_magic, mb_info);   // needs paging_init done first (identity-maps the fb)
     console_init();                // needs gfx sized, so it must come after gfx_init
     kheap_init();

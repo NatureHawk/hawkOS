@@ -1,0 +1,27 @@
+<!doctype html>
+<title>Inline margins must not move the pen</title>
+<!--
+  The bug this locks in: a stylesheet rule with margin-left or padding-left
+  matched an inline element, the layout treated it as an indent, and moving
+  the pen to the new left edge in the middle of a line drew the rest of the
+  line straight over the words already there. Google's homepage matched such
+  a rule on every <a>, so its whole footer arrived stacked in one place.
+
+  A page whose rules are all inline-level must lay out as ordinary lines.
+-->
+<style>
+  a    { margin-left: 17px; }
+  span { padding-left: 24px; }
+  em   { margin-left: 40px; }
+</style>
+<body>
+<p>Google offered in:
+  <a href="/hi">Hindi</a>
+  <a href="/bn">Bengali</a>
+  <a href="/te">Telugu</a>
+  <a href="/mr">Marathi</a>
+</p>
+<p><span>About</span><span>Business</span><span>Solutions</span><span>Advertising</span></p>
+<p>Text with <em>an emphasised run</em> in the middle of it, and then more
+words after that run so the line has to keep going.</p>
+</body>

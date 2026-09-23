@@ -59,7 +59,9 @@ typedef enum {
     HTML_BOX_PANEL,         // the ground behind a <pre>
     HTML_BOX_BAR,           // a blockquote's left edge
     HTML_BOX_BULLET,        // an unordered-list marker
-    HTML_BOX_FRAME          // an image placeholder's border
+    HTML_BOX_FRAME,         // an image placeholder's border
+    HTML_BOX_FIELD,         // a text input
+    HTML_BOX_BUTTON         // a submit or push button
 } html_box_kind_t;
 
 typedef struct {
@@ -92,9 +94,26 @@ typedef struct {
     char         refresh[URL_MAX];
 } html_page_t;
 
+// The most a run's top can sit above the top of a run emitted before it.
+// Baseline alignment moves a short face down within its line box, so runs
+// are only non-decreasing in y to within the tallest line a page can set.
+#define HTML_LINE_SLACK 64
+
 // Lays out `len` bytes of markup into a page `width` pixels wide. Pass
 // is_plain for text/plain, which skips tag handling entirely.
 html_page_t* html_layout(const char* src, uint32_t len, int width, int is_plain);
+
+// The same, with the reader-mode heuristics that drop navigation, footers
+// and sidebars turned off. A page whose content is entirely inside elements
+// that look like furniture renders as nothing at all under those rules, and
+// showing its menus is better than showing a void -- see the fallback in
+// app_browser.c.
+html_page_t* html_layout_ex(const char* src, uint32_t len, int width, int is_plain,
+                            int keep_chrome);
+
+// Total characters across every run: how much text a page actually produced,
+// which is how the browser tells "laid out fine" from "laid out to nothing".
+uint32_t     html_text_len(const html_page_t* p);
 void         html_free(html_page_t* p);
 
 // Draws the part of the page visible in the given viewport rectangle.

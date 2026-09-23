@@ -10,6 +10,7 @@
 #include "header/css.h"
 #include "header/kstring.h"
 #include "header/gfx.h"
+#include "header/theme.h"
 
 static int is_space(char c){ return c==' '||c=='\t'||c=='\r'||c=='\n'||c=='\f'; }
 static char lower(char c){ return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
@@ -44,24 +45,14 @@ static const named_color_t NAMED[] = {
 };
 #define NAMED_N ((int)(sizeof(NAMED)/sizeof(NAMED[0])))
 
-// Dark theme, light text. A page asking for near-black text would be invisible
-// against this background, so very dark colours are lifted rather than obeyed.
-// The alternative — honouring them exactly — renders a great many pages as
-// blank rectangles.
-static uint32_t readable(uint32_t c){
-    uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-    uint32_t lum = (r * 30 + g * 59 + b * 11) / 100;
-    if (lum >= 90) return c;
-
-    // Preserve the hue, raise the level to something legible.
-    if (lum == 0) return GFX_RGB(0xD6, 0xDD, 0xE6);
-    uint32_t scale = (120 * 256) / (lum ? lum : 1);
-    r = (r * scale) >> 8; g = (g * scale) >> 8; b = (b * scale) >> 8;
-    if (r > 255) r = 255;
-    if (g > 255) g = 255;
-    if (b > 255) b = 255;
-    return GFX_RGB(r, g, b);
-}
+// A page that names its own text colour is naming it against its own
+// background, which is not the one it is being rendered on. Pulling the value
+// towards something legible preserves the hue and keeps the page readable;
+// honouring it exactly renders a great many pages as blank rectangles.
+//
+// Which direction to pull depends on the appearance, so the decision lives in
+// theme.c with the palettes rather than here.
+#define readable(c) th_readable(c)
 
 // Parses a colour value. Returns 1 and writes *out on success.
 static int parse_color(const char* v, uint32_t len, uint32_t* out){

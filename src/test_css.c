@@ -9,16 +9,25 @@
 #include "header/css.h"
 #include "header/html.h"
 #include "header/gfx.h"
+#include "header/theme.h"
 
 static void inl(const char* s, css_props_t* p){
     memset(p, 0, sizeof(*p));
     css_parse_inline(s, strlen(s), p);
 }
 
+// A parsed colour is pulled towards something legible on the background it
+// will actually be drawn on, so which appearance is current changes the
+// answer. Tests about colour therefore state the appearance they are about
+// and put the system back afterwards, rather than inheriting whatever it
+// happened to be in when the suite started.
+
 // ------------------------------------------------------------- the parser
 
 KTEST(css, inline_colors){
     css_props_t p;
+    int was = theme_is_dark();
+    theme_set_dark(1);              // white needs no adjusting on a dark page
 
     inl("color: #ffffff", &p);
     KT_TRUE(p.have & CSS_HAS_COLOR);
@@ -33,22 +42,40 @@ KTEST(css, inline_colors){
 
     inl("color: white", &p);
     KT_EQ(p.color, GFX_RGB(0xFF, 0xFF, 0xFF));
+
+    theme_set_dark(was);
 }
 
-KTEST(css, dark_colors_are_lifted_to_stay_readable){
-    css_props_t p;
+static uint32_t lum_of(uint32_t c){
+    uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    return (r * 30 + g * 59 + b * 11) / 100;
+}
 
-    // The page is rendered on a dark background, so black text would be
-    // invisible. It has to come back as something legible rather than being
-    // obeyed exactly.
+KTEST(css, colors_are_pulled_towards_readable){
+    css_props_t p;
+    int was = theme_is_dark();
+
+    // Dark appearance: black text would be invisible, so it comes back as
+    // something legible rather than being obeyed exactly, and a colour that
+    // is already light is left alone.
+    theme_set_dark(1);
     inl("color: #000000", &p);
     KT_TRUE(p.have & CSS_HAS_COLOR);
-    uint32_t r = (p.color >> 16) & 0xFF, g = (p.color >> 8) & 0xFF, b = p.color & 0xFF;
-    KT_TRUE((r * 30 + g * 59 + b * 11) / 100 >= 90);
+    KT_TRUE(lum_of(p.color) >= 90);
 
-    // A colour that is already light is left alone.
     inl("color: #e0e8f0", &p);
     KT_EQ(p.color, GFX_RGB(0xE0, 0xE8, 0xF0));
+
+    // Light appearance: the failure runs the other way. A page that asks for
+    // white is asking against its own dark background, and would vanish.
+    theme_set_dark(0);
+    inl("color: #ffffff", &p);
+    KT_TRUE(lum_of(p.color) <= 165);
+
+    inl("color: #1a1a1a", &p);
+    KT_EQ(p.color, GFX_RGB(0x1A, 0x1A, 0x1A));
+
+    theme_set_dark(was);
 }
 
 KTEST(css, unparseable_values_set_nothing){
@@ -226,13 +253,16 @@ KTEST(css, at_rules_are_skipped_but_media_is_entered){
 KTEST(css, later_rules_win){
     css_sheet_t s;
     css_sheet_reset(&s);
-    const char* sheet = "p { color: red } p { color: white }";
+    // Both colours are mid-toned, so neither is adjusted for legibility in
+    // either appearance. This test is about which rule wins, and picking a
+    // value the palette would rewrite would make it about something else.
+    const char* sheet = "p { color: red } p { color: green }";
     css_sheet_add(&s, sheet, strlen(sheet));
 
     css_props_t p;
     memset(&p, 0, sizeof(p));
     css_match(&s, "p", 1, "", "", &p);
-    KT_EQ(p.color, GFX_RGB(0xFF, 0xFF, 0xFF));
+    KT_EQ(p.color, GFX_RGB(0x4C, 0xC3, 0x8A));
 }
 
 KTEST(css, sheet_overflow_is_survivable){

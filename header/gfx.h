@@ -50,6 +50,52 @@ void     gfx_draw_circle(int cx, int cy, int r, uint32_t color);
 void     gfx_vgradient(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t top, uint32_t bot);
 void     gfx_vline(uint32_t x, uint32_t y, uint32_t h, uint32_t color);
 
+// Vertical gradient through an arbitrary list of stops, evenly spaced. Still
+// one solid row per scanline, so a wallpaper with eight colours in it costs
+// exactly what a two-colour one did.
+void     gfx_mgradient(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                       const uint32_t* stops, uint32_t n);
+
+// Alpha compositing. `a` is 0-255 coverage of `color` over what is already
+// there. This is what translucent chrome is made of -- a menu bar and a dock
+// that let the wallpaper through are most of what separates a desktop that
+// looks designed from one that looks assembled out of filled rectangles.
+void     gfx_blend_pixel(uint32_t x, uint32_t y, uint32_t color, uint32_t a);
+void     gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                        uint32_t color, uint32_t a);
+
+// Rounded rectangles. `r` is the corner radius, clamped to half the shorter
+// side. The fill leaves the corner pixels untouched rather than painting a
+// background colour into them, so a rounded window over another window shows
+// that window through its corners instead of a rectangle of wallpaper.
+void     gfx_fill_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                             uint32_t r, uint32_t color);
+void     gfx_blend_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                              uint32_t r, uint32_t color, uint32_t a);
+void     gfx_draw_round_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                             uint32_t r, uint32_t color);
+
+// A soft drop shadow around (not under) a rectangle: `spread` rings of
+// falling alpha, biased downwards the way a light source above the screen
+// would put it. Drawing only the ring costs a few thousand blended pixels
+// instead of the whole window area, which matters when the compositor
+// repaints every window on every mouse move.
+void     gfx_shadow(int x, int y, int w, int h, int spread, uint32_t color);
+
+// How far in from the edge a rounded corner of radius `r` starts, on the row
+// `k` rows from the extreme edge (0 is the outermost row). Exposed so a
+// caller can reason about the same curve the fill used.
+uint32_t gfx_round_inset(uint32_t r, uint32_t k);
+
+// Reads a rectangle out of the surface currently being drawn to, and writes
+// one back. gfx_get_pixel is not a substitute: it reads the framebuffer,
+// which is the wrong surface while the compositor is building a frame
+// off-screen. Used to preserve what is behind a window's rounded corners
+// across the app's own painting, which is clipped to a square client area
+// and would otherwise fill them in.
+void     gfx_copy_out(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t* dst);
+void     gfx_copy_in (uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* src);
+
 // 5x7 font (see font8x8.h) — used by the text console.
 void gfx_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg, int scale);
 void gfx_draw_string(uint32_t x, uint32_t y, const char* s, uint32_t fg, uint32_t bg, int scale);

@@ -17,8 +17,8 @@ extern volatile unsigned long long ticks;
 typedef struct { int dummy; } about_t;
 
 static void row(int x, int* y, const char* key, const char* val){
-    gfx_text((uint32_t)x, (uint32_t)*y, key, WM_COL_TEXT_MUTED, GFX_TRANSPARENT);
-    gfx_text((uint32_t)(x + 130), (uint32_t)*y, val, WM_COL_TEXT_DARK, GFX_TRANSPARENT);
+    gfx_text((uint32_t)x, (uint32_t)*y, key, TH_TEXT_MUTED, GFX_TRANSPARENT);
+    gfx_text((uint32_t)(x + 130), (uint32_t)*y, val, TH_TEXT, GFX_TRANSPARENT);
     *y += 22;
 }
 
@@ -26,16 +26,25 @@ static void paint(wm_window_t* win){
     int x, y, w, h;
     wm_client_rect(win, &x, &y, &w, &h);
 
-    gfx_fill_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, 62, TH_PANEL);
-    gfx_fill_circle(x + 36, y + 31, 18, WM_COL_ACCENT);
-    gfx_fill_rect((uint32_t)(x + 30), (uint32_t)(y + 24), 14, 4, TH_PANEL);
-    gfx_fill_rect((uint32_t)(x + 30), (uint32_t)(y + 32), 9, 4, TH_PANEL);
-    gfx_text((uint32_t)(x + 68), (uint32_t)(y + 16), "hawkOS", WM_COL_ACCENT, GFX_TRANSPARENT);
-    gfx_text((uint32_t)(x + 68), (uint32_t)(y + 36), "a hobby operating system, built from scratch",
-             WM_COL_TEXT_LIGHT, GFX_TRANSPARENT);
+    gfx_fill_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, 74, TH_PANEL);
+    gfx_hline((uint32_t)x, (uint32_t)(y + 73), (uint32_t)w, TH_PANEL_EDGE);
+
+    // The mark, drawn rather than lettered: a disc with the hawk's beak and
+    // crest cut out of it in the panel colour, so it follows the appearance
+    // instead of being a fixed pair of colours.
+    gfx_fill_circle(x + 40, y + 37, 20, TH_ACCENT);
+    for (int i = 0; i < 8; i++)
+        gfx_fill_rect((uint32_t)(x + 44), (uint32_t)(y + 31 + i / 2), (uint32_t)(10 - i), 1,
+                      TH_PANEL);
+    for (int i = 0; i < 7; i++)
+        gfx_fill_rect((uint32_t)(x + 26 - i / 2), (uint32_t)(y + 27 + i), 3, 1, TH_PANEL);
+
+    gfx_text((uint32_t)(x + 76), (uint32_t)(y + 22), "hawkOS", TH_TEXT, GFX_TRANSPARENT);
+    gfx_text((uint32_t)(x + 76), (uint32_t)(y + 42), "a hobby operating system, built from scratch",
+             TH_TEXT_MUTED, GFX_TRANSPARENT);
 
     char buf[80], vendor[13], brand[49];
-    int ry = y + 78;
+    int ry = y + 92;
 
     cpuid_vendor(vendor);
     cpuid_brand(brand);
@@ -73,7 +82,8 @@ static void paint(wm_window_t* win){
 
     gfx_hline((uint32_t)(x + 16), (uint32_t)(ry + 6), (uint32_t)(w - 32), TH_PANEL_EDGE);
     gfx_text((uint32_t)(x + 16), (uint32_t)(ry + 18),
-             "Click an icon on the left to open an app.", WM_COL_TEXT_MUTED, GFX_TRANSPARENT);
+             "Open an app from the dock at the bottom of the screen.",
+             TH_TEXT_MUTED, GFX_TRANSPARENT);
 }
 
 static void handler(wm_window_t* win, const wm_event_t* ev){
@@ -91,5 +101,5 @@ void app_about_open(void){
     about_t* a = (about_t*)kmalloc(sizeof(about_t));
     if (!a) return;
     memset(a, 0, sizeof(*a));
-    wm_open("About hawkOS", 420, 160, 520, 350, handler, a);
+    wm_open("About hawkOS", 420, 150, 540, 372, handler, a);
 }

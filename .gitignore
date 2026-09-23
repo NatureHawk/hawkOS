@@ -28,3 +28,11 @@ third_party/bearssl/T0Comp.exe
 
 # Scratch file used by tools/patch.py; contents are transient.
 tools/edits.json
+
+# The layout test corpus: megabytes of somebody else's markup, which also goes
+# stale. tools/pages/fetch.sh rebuilds it, and the regressions that matter are
+# pinned by the committed fixtures in tools/layout/fixtures.
+tools/pages/*.html
+
+# Working files from a screenshot session (crops, throwaway captures).
+shots/_*.png

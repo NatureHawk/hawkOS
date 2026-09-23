@@ -41,9 +41,8 @@ static wm_root_paint_t root_paint = 0;
 static wm_root_click_t root_click = 0;
 static wm_root_key_t   root_key   = 0;
 
-static int             bar_left_w = 0, bar_right_w = 0;
-static wm_bar_paint_t  bar_left_paint = 0, bar_right_paint = 0;
-static wm_bar_click_t  bar_left_click = 0, bar_right_click = 0;
+static wm_chrome_paint_t top_paint = 0, bottom_paint = 0;
+static wm_chrome_click_t top_click = 0, bottom_click = 0;
 
 static wm_overlay_paint_t overlay_paint = 0;
 static wm_overlay_click_t overlay_click = 0;
@@ -68,10 +67,13 @@ static int snap_hint = 0;
 static unsigned long long click_when = 0;
 static int click_where_x = 0, click_where_y = 0, click_which = -1;
 
-#define BTN_W    20
-#define BTN_GAP  6
-#define TAB_W    170
-#define TAB_GAP  6
+// The three window buttons, at the left of the title bar. Their size and
+// spacing is the whole reason they read as a set rather than as three
+// unrelated dots: 12 across with 8 between is tight enough to group and wide
+// enough that a mouse can pick one out.
+#define LIGHT_D   12
+#define LIGHT_GAP 8
+#define LIGHT_X0  14
 
 #define GRIP        5      // thickness of the resize border, in pixels
 #define SNAP_EDGE   10     // how close to a screen edge a drag starts snapping
@@ -90,9 +92,9 @@ void wm_invalidate(void){ dirty = 1; }
 
 void wm_work_area(int* x, int* y, int* w, int* h){
     if (x) *x = 0;
-    if (y) *y = 0;
+    if (y) *y = WM_MENUBAR_H;
     if (w) *w = (int)gfx_width();
-    if (h) *h = (int)gfx_height() - WM_TASKBAR_H;
+    if (h) *h = (int)gfx_height() - WM_MENUBAR_H - WM_DOCK_H;
 }
 
 void wm_set_root(wm_root_paint_t paint, wm_root_click_t click, wm_root_key_t key){
@@ -101,11 +103,10 @@ void wm_set_root(wm_root_paint_t paint, wm_root_click_t click, wm_root_key_t key
     root_key   = key;
 }
 
-void wm_set_taskbar_ends(int left_w, int right_w,
-                         wm_bar_paint_t lp, wm_bar_click_t lc,
-                         wm_bar_paint_t rp, wm_bar_click_t rc){
-    bar_left_w  = left_w;  bar_left_paint  = lp; bar_left_click  = lc;
-    bar_right_w = right_w; bar_right_paint = rp; bar_right_click = rc;
+void wm_set_chrome(wm_chrome_paint_t tp, wm_chrome_click_t tc,
+                   wm_chrome_paint_t bp, wm_chrome_click_t bc){
+    top_paint = tp; top_click = tc;
+    bottom_paint = bp; bottom_click = bc;
 }
 
 void wm_set_overlay(wm_overlay_paint_t paint, wm_overlay_click_t click){
@@ -357,87 +358,119 @@ void wm_quit(void){ running = 0; }
 
 // ------------------------------------------------------------------ paint
 
-// Knocks the corner pixels out of a rectangle so windows read as rounded
-// rather than as hard boxes. Three pixels is enough to be visible at this
-// resolution without the corner looking chewed.
-static void round_corners(int x, int y, int w, int h, uint32_t bg){
-    static const int CUT[3] = { 3, 2, 1 };
-    for (int i = 0; i < 3; i++){
-        int n = CUT[i];
-        gfx_fill_rect((uint32_t)x, (uint32_t)(y + i), (uint32_t)n, 1, bg);
-        gfx_fill_rect((uint32_t)(x + w - n), (uint32_t)(y + i), (uint32_t)n, 1, bg);
-        gfx_fill_rect((uint32_t)x, (uint32_t)(y + h - 1 - i), (uint32_t)n, 1, bg);
-        gfx_fill_rect((uint32_t)(x + w - n), (uint32_t)(y + h - 1 - i), (uint32_t)n, 1, bg);
+// Close, minimise, zoom -- left to right, at the left end of the title bar.
+static void title_buttons(const wm_window_t* win, int* close_x, int* min_x, int* max_x){
+    int c = win->x + LIGHT_X0;
+    if (close_x) *close_x = c;
+    if (min_x)   *min_x   = c + LIGHT_D + LIGHT_GAP;
+    if (max_x)   *max_x   = c + 2 * (LIGHT_D + LIGHT_GAP);
+}
+
+// The glyph inside a window button. Only drawn on the focused window, the
+// way the machines this is modelled on only show them under the pointer:
+// three flat colours read as a set, three colours full of symbols read as
+// clutter on every window at once.
+static void light_glyph(int cx, int cy, int which, uint32_t c){
+    switch (which){
+        case 0:                                   // close
+            for (int i = -2; i <= 2; i++){
+                gfx_put_pixel((uint32_t)(cx + i), (uint32_t)(cy + i), c);
+                gfx_put_pixel((uint32_t)(cx + i), (uint32_t)(cy - i), c);
+            }
+            break;
+        case 1:                                   // minimise
+            gfx_fill_rect((uint32_t)(cx - 3), (uint32_t)cy, 7, 1, c);
+            break;
+        default:                                  // zoom
+            gfx_fill_rect((uint32_t)(cx - 3), (uint32_t)(cy - 3), 7, 7, c);
+            break;
     }
 }
 
-// Three buttons now, right to left: close, maximise, minimise.
-static void title_buttons(const wm_window_t* win, int* min_x, int* max_x, int* close_x){
-    int cx = win->x + win->w - BTN_W - 6;
-    int ax = cx - BTN_W - BTN_GAP;
-    int mx = ax - BTN_W - BTN_GAP;
-    if (min_x)   *min_x = mx;
-    if (max_x)   *max_x = ax;
-    if (close_x) *close_x = cx;
+// What is behind a window's two bottom corners, kept across the app's own
+// painting. The app draws clipped to a square client area and would fill the
+// corners in; putting these back afterwards is what keeps the bottom of the
+// window rounded over whatever happens to be underneath it, rather than over
+// an assumption about the wallpaper.
+static uint32_t corner_bl[WM_CORNER * WM_CORNER];
+static uint32_t corner_br[WM_CORNER * WM_CORNER];
+
+static void corners_save(const wm_window_t* w){
+    gfx_copy_out((uint32_t)w->x, (uint32_t)(w->y + w->h - WM_CORNER),
+                 WM_CORNER, WM_CORNER, corner_bl);
+    gfx_copy_out((uint32_t)(w->x + w->w - WM_CORNER), (uint32_t)(w->y + w->h - WM_CORNER),
+                 WM_CORNER, WM_CORNER, corner_br);
+}
+
+static void corners_restore(const wm_window_t* w){
+    for (uint32_t k = 0; k < WM_CORNER; k++){
+        uint32_t inset = gfx_round_inset(WM_CORNER, k);
+        if (!inset) continue;
+        uint32_t row = WM_CORNER - 1 - k;                 // row inside the block
+        uint32_t y   = (uint32_t)(w->y + w->h - WM_CORNER) + row;
+        gfx_copy_in((uint32_t)w->x, y, inset, 1, corner_bl + row * WM_CORNER);
+        gfx_copy_in((uint32_t)(w->x + w->w - inset), y, inset, 1,
+                    corner_br + row * WM_CORNER + (WM_CORNER - inset));
+    }
 }
 
 static void paint_frame(int idx, uint32_t desk_bg){
+    (void)desk_bg;
     wm_window_t* win = &windows[idx];
     int on = (idx == focused);
 
     gfx_clip_reset();
+    corners_save(win);
 
-    gfx_fill_rect((uint32_t)win->x, (uint32_t)win->y, (uint32_t)win->w, WM_TITLE_H,
-                  on ? TH_TITLE_ON : TH_TITLE_OFF);
-    gfx_draw_rect((uint32_t)win->x, (uint32_t)win->y, (uint32_t)win->w, (uint32_t)win->h,
-                  on ? TH_ACCENT_DIM : TH_WIN_EDGE);
+    // Shadow first, outside the frame. A window that casts one reads as
+    // sitting above the desktop instead of pasted onto it, and giving the
+    // focused window a deeper one says which is in front without needing a
+    // second title-bar colour fighting the palette.
+    gfx_shadow(win->x, win->y, win->w, win->h, on ? 11 : 5, TH_WIN_SHADOW);
 
-    // A focused window gets a bright hairline under its title bar. It reads
-    // as focus at a glance without needing a second title-bar colour that
-    // fights with the palette.
-    if (on)
-        gfx_hline((uint32_t)win->x, (uint32_t)(win->y + WM_TITLE_H - 1),
-                  (uint32_t)win->w, TH_ACCENT);
-    else
-        gfx_hline((uint32_t)win->x, (uint32_t)(win->y + WM_TITLE_H - 1),
-                  (uint32_t)win->w, TH_WIN_EDGE);
+    // One rounded shape for the whole window. The corner pixels are never
+    // written, so whatever is behind shows through them -- which is what
+    // makes a rounded window over another window look right.
+    gfx_fill_round_rect((uint32_t)win->x, (uint32_t)win->y,
+                        (uint32_t)win->w, (uint32_t)win->h, WM_CORNER, TH_WIN_BG);
 
-    int bmin, bmax, bclose;
-    title_buttons(win, &bmin, &bmax, &bclose);
+    // The title bar is the top of that same shape: rounded across the top,
+    // square where it meets the content.
+    uint32_t tcol = on ? TH_TITLE_ON : TH_TITLE_OFF;
+    gfx_fill_round_rect((uint32_t)win->x, (uint32_t)win->y,
+                        (uint32_t)win->w, WM_TITLE_H, WM_CORNER, tcol);
+    gfx_fill_rect((uint32_t)win->x, (uint32_t)(win->y + WM_CORNER),
+                  (uint32_t)win->w, WM_TITLE_H - WM_CORNER, tcol);
+    gfx_hline((uint32_t)win->x, (uint32_t)(win->y + WM_TITLE_H - 1),
+              (uint32_t)win->w, TH_PANEL_EDGE);
 
-    // Clip the title so a long one stops at the buttons instead of running
-    // underneath them.
-    gfx_clip_set((uint32_t)(win->x + 10), (uint32_t)win->y,
-                 (uint32_t)(bmin - win->x - 16), WM_TITLE_H);
-    gfx_text((uint32_t)(win->x + 10), (uint32_t)(win->y + 6), win->title,
-             on ? TH_TEXT : TH_TEXT_MUTED, GFX_TRANSPARENT);
-    gfx_clip_reset();
-
-    int by = win->y + 5;
-
-    // Minimise: a bar. Maximise: a box, or two offset boxes when the window
-    // is already maximised. Close: a cross. All drawn rather than lettered,
-    // so they do not depend on the font having a glyph for them.
-    gfx_fill_rect((uint32_t)bmin, (uint32_t)by, BTN_W, 18, TH_PANEL);
-    gfx_fill_rect((uint32_t)(bmin + 5), (uint32_t)(by + 12), 10, 2, TH_TEXT_MUTED);
-
-    gfx_fill_rect((uint32_t)bmax, (uint32_t)by, BTN_W, 18, TH_PANEL);
-    if (win->maximized){
-        gfx_draw_rect((uint32_t)(bmax + 5), (uint32_t)(by + 6), 9, 8, TH_TEXT_MUTED);
-        gfx_draw_rect((uint32_t)(bmax + 8), (uint32_t)(by + 3), 9, 8, TH_TEXT_MUTED);
-    } else {
-        gfx_draw_rect((uint32_t)(bmax + 5), (uint32_t)(by + 4), 11, 10, TH_TEXT_MUTED);
+    int bclose, bmin, bmax;
+    title_buttons(win, &bclose, &bmin, &bmax);
+    int lights[3] = { bclose, bmin, bmax };
+    uint32_t lcol[3] = { TH_LIGHT_CLOSE, TH_LIGHT_MIN, TH_LIGHT_MAX };
+    int cy = win->y + WM_TITLE_H / 2;
+    for (int i = 0; i < 3; i++){
+        int cx = lights[i] + LIGHT_D / 2;
+        gfx_fill_circle(cx, cy, LIGHT_D / 2, on ? lcol[i] : TH_LIGHT_OFF);
+        if (on) light_glyph(cx, cy, i, GFX_RGB(0x5A, 0x28, 0x10));
     }
 
-    gfx_fill_rect((uint32_t)bclose, (uint32_t)by, BTN_W, 18, on ? TH_CLOSE : TH_PANEL);
-    for (int i = 0; i < 8; i++){
-        gfx_put_pixel((uint32_t)(bclose + 6 + i), (uint32_t)(by + 5 + i), TH_TEXT);
-        gfx_put_pixel((uint32_t)(bclose + 13 - i), (uint32_t)(by + 5 + i), TH_TEXT);
+    // The title is centred on the window, not on the space left over beside
+    // the buttons, and pushed right only if it would otherwise collide.
+    int tw   = (int)gfx_text_width(win->title);
+    int left = bmax + LIGHT_D + 14;
+    int tx   = win->x + (win->w - tw) / 2;
+    if (tx < left) tx = left;
+    int avail = win->x + win->w - left - 12;
+    if (avail > 0){
+        gfx_clip_set((uint32_t)left, (uint32_t)win->y, (uint32_t)avail, WM_TITLE_H);
+        gfx_text((uint32_t)tx, (uint32_t)(win->y + (WM_TITLE_H - 16) / 2), win->title,
+                 on ? TH_TITLE_TEXT_ON : TH_TITLE_TEXT_OFF, GFX_TRANSPARENT);
+        gfx_clip_reset();
     }
 
     int clx, cly, clw, clh;
     wm_client_rect(win, &clx, &cly, &clw, &clh);
-    gfx_fill_rect((uint32_t)clx, (uint32_t)cly, (uint32_t)clw, (uint32_t)clh, TH_WIN_BG);
 
     if (win->handler){
         gfx_clip_set((uint32_t)clx, (uint32_t)cly, (uint32_t)clw, (uint32_t)clh);
@@ -446,21 +479,9 @@ static void paint_frame(int idx, uint32_t desk_bg){
         gfx_clip_reset();
     }
 
-    // Three ticks in the bottom-right corner: without them the resize border
-    // is invisible and nobody would think to reach for it.
-    if (!win->maximized){
-        for (int i = 0; i < 3; i++){
-            int o = 3 + i * 4;
-            gfx_fill_rect((uint32_t)(win->x + win->w - o - 2),
-                          (uint32_t)(win->y + win->h - 4), 2, 2,
-                          on ? TH_ACCENT_DIM : TH_WIN_EDGE);
-            gfx_fill_rect((uint32_t)(win->x + win->w - 4),
-                          (uint32_t)(win->y + win->h - o - 2), 2, 2,
-                          on ? TH_ACCENT_DIM : TH_WIN_EDGE);
-        }
-    }
-
-    round_corners(win->x, win->y, win->w, win->h, desk_bg);
+    corners_restore(win);
+    gfx_draw_round_rect((uint32_t)win->x, (uint32_t)win->y,
+                        (uint32_t)win->w, (uint32_t)win->h, WM_CORNER, TH_WIN_EDGE);
 }
 
 static void paint_snap_hint(void){
@@ -468,49 +489,22 @@ static void paint_snap_hint(void){
     int x, y, w, h;
     snap_rect(snap_hint, &x, &y, &w, &h);
     gfx_clip_reset();
-    gfx_draw_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h, TH_ACCENT);
-    gfx_draw_rect((uint32_t)(x + 1), (uint32_t)(y + 1), (uint32_t)(w - 2), (uint32_t)(h - 2),
-                  TH_ACCENT_DIM);
-    gfx_draw_rect((uint32_t)(x + 2), (uint32_t)(y + 2), (uint32_t)(w - 4), (uint32_t)(h - 4),
-                  TH_ACCENT_DIM);
+    // A translucent wash of the target rectangle rather than three nested
+    // outlines: it says what shape the window is about to take, which is the
+    // whole point of showing the hint before the release.
+    gfx_blend_round_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h,
+                         WM_CORNER, TH_ACCENT, 60);
+    gfx_draw_round_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h,
+                        WM_CORNER, TH_ACCENT);
 }
 
-static void paint_taskbar(void){
+// The two reserved strips. Everything in them belongs to the desktop shell;
+// all the window manager does is hand over the geometry and the paint order.
+static void paint_chrome(void){
     uint32_t W = gfx_width(), H = gfx_height();
-    int y = (int)(H - WM_TASKBAR_H);
-
     gfx_clip_reset();
-    gfx_fill_rect(0, (uint32_t)y, W, WM_TASKBAR_H, TH_TASKBAR);
-    gfx_hline(0, (uint32_t)y, W, TH_TASKBAR_EDGE);
-
-    if (bar_left_paint)  bar_left_paint(0, y, bar_left_w, WM_TASKBAR_H);
-    if (bar_right_paint) bar_right_paint((int)W - bar_right_w, y, bar_right_w, WM_TASKBAR_H);
-
-    // One button per open window, so a minimised window is still reachable.
-    int bx    = bar_left_w + 8;
-    int limit = (int)W - bar_right_w - 8;
-
-    for (int i = 0; i < order_n; i++){
-        int idx = order[i];
-        if (!windows[idx].used) continue;
-        if (bx + TAB_W > limit) break;
-
-        int on  = (idx == focused && !windows[idx].minimized);
-        int min = windows[idx].minimized;
-
-        gfx_fill_rect((uint32_t)bx, (uint32_t)(y + 7), TAB_W, WM_TASKBAR_H - 14,
-                      on ? TH_HOVER : TH_TASKBAR);
-        if (on) gfx_hline((uint32_t)bx, (uint32_t)(y + 7), TAB_W, TH_ACCENT);
-        else    gfx_draw_rect((uint32_t)bx, (uint32_t)(y + 7), TAB_W, WM_TASKBAR_H - 14,
-                              TH_TASKBAR_EDGE);
-
-        gfx_clip_set((uint32_t)(bx + 8), (uint32_t)y, TAB_W - 16, WM_TASKBAR_H);
-        gfx_text((uint32_t)(bx + 10), (uint32_t)(y + 14), windows[idx].title,
-                 on ? TH_TEXT : (min ? TH_TEXT_DIM : TH_TEXT_MUTED), GFX_TRANSPARENT);
-        gfx_clip_reset();
-
-        bx += TAB_W + TAB_GAP;
-    }
+    if (top_paint)    top_paint(0, 0, (int)W, WM_MENUBAR_H);
+    if (bottom_paint) bottom_paint(0, (int)H - WM_DOCK_H, (int)W, WM_DOCK_H);
 }
 
 // 12x19 arrow. '#' is the black outline, '.' the white fill, space is
@@ -561,7 +555,7 @@ static void compose(int mx, int my){
     }
 
     paint_snap_hint();
-    paint_taskbar();
+    paint_chrome();
     if (overlay_paint) overlay_paint();
     paint_cursor(mx, my);
 }
@@ -594,23 +588,22 @@ static int edge_hit(const wm_window_t* w, int x, int y){
     return e;
 }
 
-// Returns -2 when the point is not in the taskbar at all, -1 for taskbar
-// background, otherwise the window index whose button was hit.
-static int taskbar_hit(int x, int y){
-    uint32_t W = gfx_width(), H = gfx_height();
-    if (y < (int)(H - WM_TASKBAR_H)) return -2;
-
-    int bx    = bar_left_w + 8;
-    int limit = (int)W - bar_right_w - 8;
-
-    for (int i = 0; i < order_n; i++){
-        int idx = order[i];
-        if (!windows[idx].used) continue;
-        if (bx + TAB_W > limit) break;
-        if (x >= bx && x < bx + TAB_W) return idx;
-        bx += TAB_W + TAB_GAP;
+// A click in one of the reserved strips, offered to whichever hook owns it.
+// Returns 1 when the strip consumed it -- including when it did nothing with
+// it, because a click on the menu bar must not fall through to a window.
+static int chrome_press(int x, int y){
+    uint32_t H = gfx_height();
+    if (y < WM_MENUBAR_H){
+        if (top_click) top_click(x, y);
+        return 1;
     }
-    return -1;
+    if (y >= (int)H - WM_DOCK_H){
+        // The dock does not fill its strip, so a click beside it should reach
+        // whatever is underneath rather than being swallowed by the gap.
+        if (bottom_click && bottom_click(x, y)) return 1;
+        return 0;
+    }
+    return 0;
 }
 
 static void send(int idx, int type, int a, int b, int key){
@@ -643,18 +636,7 @@ static void on_press(int mx, int my){
     // whatever is underneath.
     if (overlay_click && overlay_click(mx, my)){ dirty = 1; return; }
 
-    int tb = taskbar_hit(mx, my);
-    if (tb != -2){
-        uint32_t W = gfx_width();
-        if (mx < bar_left_w && bar_left_click){ bar_left_click(mx, my); dirty = 1; return; }
-        if (mx >= (int)W - bar_right_w && bar_right_click){ bar_right_click(mx, my); dirty = 1; return; }
-        if (tb >= 0){
-            if (tb == focused && !windows[tb].minimized) wm_minimize(&windows[tb], 1);
-            else wm_focus(&windows[tb]);
-            dirty = 1;
-        }
-        return;
-    }
+    if (chrome_press(mx, my)){ dirty = 1; return; }
 
     int idx = hit_test(mx, my);
     if (idx < 0){
@@ -671,14 +653,14 @@ static void on_press(int mx, int my){
     int edge = edge_hit(w, mx, my);
     if (edge){ begin_resize(idx, edge, mx, my); return; }
 
-    int bmin, bmax, bclose;
-    title_buttons(w, &bmin, &bmax, &bclose);
-    int by = w->y + 5;
+    int bclose, bmin, bmax;
+    title_buttons(w, &bclose, &bmin, &bmax);
+    int by = w->y + (WM_TITLE_H - LIGHT_D) / 2;
 
-    if (my >= by && my < by + 18){
-        if (mx >= bclose && mx < bclose + BTN_W){ wm_close(w); return; }
-        if (mx >= bmax && mx < bmax + BTN_W){ wm_maximize(w, !w->maximized); return; }
-        if (mx >= bmin && mx < bmin + BTN_W){ wm_minimize(w, 1); return; }
+    if (my >= by && my < by + LIGHT_D){
+        if (mx >= bclose && mx < bclose + LIGHT_D){ wm_close(w); return; }
+        if (mx >= bmin && mx < bmin + LIGHT_D){ wm_minimize(w, 1); return; }
+        if (mx >= bmax && mx < bmax + LIGHT_D){ wm_maximize(w, !w->maximized); return; }
     }
 
     if (my < w->y + WM_TITLE_H){

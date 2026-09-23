@@ -1,0 +1,17 @@
+<!doctype html>
+<title>Quoted attribute values may contain angle brackets</title>
+<!--
+  Wikipedia articles carry their infobox source in a data-mw attribute: JSON
+  full of wikitext, including things like "<ref name=\"x\" />". Ending the tag
+  at the first '>' cuts that attribute in half and dumps the rest of the JSON
+  into the article as body text, which is what the MS-DOS page rendered as.
+
+  Nothing containing SPILL may reach the page. The visible text is exactly
+  "Real text." and the two paragraphs below it.
+-->
+<body>
+<div data-mw='{"parts":[{"template":{"target":"Infobox SPILL","params":{"a":{"wt":"<ref name=\"x SPILL\" />"}}}}]}'>Real text.</div>
+<p title="a > b SPILL">Comparison in a title attribute.</p>
+<img src="/x.png" alt="An ordinary caption" width="200" height="150" data-x='<b SPILL>'>
+<p>After the image.</p>
+</body>

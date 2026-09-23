@@ -1,0 +1,20 @@
+wait 2
+shot shots/s01-desktop.png
+click 516 754
+wait 3
+shot shots/s03-files.png
+click 60 220
+wait 2
+shot shots/s03b-files-folder.png
+click 702 754
+wait 2
+shot shots/s04-activity.png
+click 79 12
+wait 1
+shot shots/s06-menu.png
+key esc
+wait 1
+click 143 12
+wait 1
+shot shots/s07-appsmenu.png
+key esc

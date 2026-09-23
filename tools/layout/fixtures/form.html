@@ -1,0 +1,30 @@
+<!doctype html>
+<title>Centred layout table with form controls</title>
+<!--
+  The shape of every plain search-engine home page: a <center>, a layout
+  table, and a form. All three used to render as one run-on line with the
+  controls invisible.
+
+  Expected: the field and both buttons are drawn, the cells break onto their
+  own lines, and the centred content is centred as a unit -- boxes moving
+  with the text they sit beside rather than staying at the left margin.
+-->
+<body>
+<center>
+<div><img alt="Example" height="92" width="272" src="/logo.png"></div>
+<form action="/search">
+<table cellpadding="0" cellspacing="0"><tr valign="top">
+  <td width="25%">&nbsp;</td>
+  <td align="center" nowrap="">
+    <input type="hidden" name="ie" value="UTF-8">
+    <input class="lst" autocomplete="off" title="Search" name="q" size="41">
+    <br>
+    <input class="lsb" value="Search" name="btnG" type="submit">
+    <input class="lsb" value="I'm Feeling Lucky" name="btnI" type="submit">
+  </td>
+  <td align="left" width="25%"><a href="/advanced">Advanced search</a></td>
+</tr></table>
+</form>
+<p style="font-size:8pt">&copy; 2026 - <a href="/privacy">Privacy</a> - <a href="/terms">Terms</a></p>
+</center>
+</body>

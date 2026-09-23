@@ -69,6 +69,7 @@ typedef struct {
     const char*     src;
     uint32_t        src_len;
     int             src_plain;
+    int             src_keep_chrome;   // reader mode was turned off for this one
 
     char            history[HISTORY_MAX][URL_MAX];
     int             history_n;
@@ -96,7 +97,17 @@ typedef struct {
     volatile int fetch_go;
     volatile int fetch_tab;
     char         fetch_url[URL_MAX];
+
+    // Generated markup for a page the browser has to explain rather than
+    // show. It lives here rather than on the stack because a laid-out page
+    // keeps a pointer to the source it was built from, for reflow on resize.
+    char         notice[1600];
 } browser_t;
+
+// Below this many characters, a document has not really rendered. Picked to
+// sit above a stray "Loading..." or copyright line and well below the
+// shortest real page: example.com sets 109.
+#define EMPTY_CHARS 48
 
 // One browser window at a time: the fetch task needs a stable pointer to the
 // state it is filling in, and a second concurrent fetch would need a second
@@ -166,15 +177,17 @@ static void fetch_task(void* arg){
     }
 }
 
-static void layout_tab(browser_t* b, tab_t* t, const char* src, uint32_t len, int is_plain){
+static void layout_tab(browser_t* b, tab_t* t, const char* src, uint32_t len,
+                       int is_plain, int keep_chrome){
     if (t->page){ html_free(t->page); t->page = 0; }
     int w = b->view_w > 200 ? b->view_w : 200;
-    t->page = html_layout(src, len, w, is_plain);
+    t->page = html_layout_ex(src, len, w, is_plain, keep_chrome);
     t->scroll = 0;
 
-    t->src       = src;
-    t->src_len   = len;
-    t->src_plain = is_plain;
+    t->src             = src;
+    t->src_len         = len;
+    t->src_plain       = is_plain;
+    t->src_keep_chrome = keep_chrome;
 
     if (t->page && t->page->title[0]){
         strncpy(t->title, t->page->title, sizeof(t->title) - 1);
@@ -182,8 +195,43 @@ static void layout_tab(browser_t* b, tab_t* t, const char* src, uint32_t len, in
     }
 }
 
+// A page that laid out to nothing at all.
+//
+// Nearly always this means the site assembles its content with JavaScript,
+// and the markup that arrived really is empty -- YouTube sends the better
+// part of a megabyte containing no page text whatsoever. Saying so is the
+// whole fix. The previous behaviour was a black rectangle, which reads as a
+// broken browser rather than as a page that cannot be shown, and it hides
+// the fact that everything underneath -- DNS, TLS, HTTP -- worked.
+static void show_empty_notice(browser_t* b, tab_t* t){
+    url_t u;
+    const char* host = "That site";
+    if (url_parse(t->url, &u) == 0 && u.host[0]) host = u.host;
+
+    ksnprintf(b->notice, sizeof(b->notice),
+        "<h1>Nothing to render</h1>"
+        "<p>%s answered %d and sent %u bytes, and none of it is page content. "
+        "Sites built this way put an empty document on the wire and assemble "
+        "what you see with JavaScript once it is running in the browser.</p>"
+        "<p>hawkOS has no JavaScript engine, so there is nothing here to lay "
+        "out. Everything underneath worked: the name resolved, TLS "
+        "negotiated, and the server replied.</p>"
+        "<h2>Pages that render fully</h2>"
+        "<ul>"
+        "<li><a href=\"https://en.wikipedia.org/wiki/Operating_system\">Wikipedia</a></li>"
+        "<li><a href=\"https://news.ycombinator.com/\">Hacker News</a></li>"
+        "<li><a href=\"https://lite.duckduckgo.com/lite/?q=%s\">Search for %s</a></li>"
+        "<li><a href=\"https://example.com\">example.com</a></li>"
+        "</ul>",
+        host, t->resp.status, t->resp.body_len, host, host);
+
+    layout_tab(b, t, b->notice, strlen(b->notice), 0, 0);
+    strncpy(t->title, host, sizeof(t->title) - 1);
+    t->title[sizeof(t->title) - 1] = 0;
+}
+
 static void show_home(browser_t* b, tab_t* t){
-    layout_tab(b, t, HOME_PAGE, strlen(HOME_PAGE), 0);
+    layout_tab(b, t, HOME_PAGE, strlen(HOME_PAGE), 0, 0);
     strcpy(t->title, "New tab");
     t->url[0] = 0;
     t->url_len = 0;
@@ -342,7 +390,7 @@ static void close_tab(browser_t* b, int idx){
 // ---------------------------------------------------------------- painting
 
 static void paint_tabbar(browser_t* b, int x, int y, int w){
-    gfx_fill_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, TABBAR_H, TH_TASKBAR);
+    gfx_fill_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, TABBAR_H, TH_PANEL);
     gfx_hline((uint32_t)x, (uint32_t)(y + TABBAR_H - 1), (uint32_t)w, TH_PANEL_EDGE);
 
     int tx = x + 4;
@@ -350,12 +398,17 @@ static void paint_tabbar(browser_t* b, int x, int y, int w){
         if (!b->tabs[i].used) continue;
         if (tx + TAB_W > x + w - NEWTAB_W - 8) break;
 
+        // The selected tab is a rounded card lifted out of the strip, rather
+        // than the same rectangle in a second colour with a line over it.
         int on = (i == b->cur);
-        gfx_fill_rect((uint32_t)tx, (uint32_t)(y + 3), TAB_W, TABBAR_H - 3,
-                      on ? TH_PANEL : TH_TASKBAR);
-        if (on) gfx_hline((uint32_t)tx, (uint32_t)(y + 3), TAB_W, TH_ACCENT);
-        else    gfx_vline((uint32_t)(tx + TAB_W - 1), (uint32_t)(y + 8), TABBAR_H - 14,
-                          TH_PANEL_EDGE);
+        if (on){
+            gfx_fill_round_rect((uint32_t)tx, (uint32_t)(y + 3), TAB_W, TABBAR_H - 3, 7,
+                                TH_WIN_BG);
+            gfx_fill_rect((uint32_t)tx, (uint32_t)(y + TABBAR_H - 8), TAB_W, 8, TH_WIN_BG);
+        } else {
+            gfx_vline((uint32_t)(tx + TAB_W - 1), (uint32_t)(y + 8), TABBAR_H - 14,
+                      TH_PANEL_EDGE);
+        }
 
         const char* label = b->tabs[i].title[0] ? b->tabs[i].title : "New tab";
         if (b->tabs[i].state == BR_LOADING) label = "Loading...";
@@ -376,7 +429,7 @@ static void paint_tabbar(browser_t* b, int x, int y, int w){
     }
 
     int nx = x + w - NEWTAB_W - 4;
-    gfx_fill_rect((uint32_t)nx, (uint32_t)(y + 5), NEWTAB_W, TABBAR_H - 11, TH_PANEL);
+    gfx_fill_round_rect((uint32_t)nx, (uint32_t)(y + 5), NEWTAB_W, TABBAR_H - 11, 5, TH_CONTROL);
     gfx_fill_rect((uint32_t)(nx + 13), (uint32_t)(y + 10), 4, 12, TH_TEXT_MUTED);
     gfx_fill_rect((uint32_t)(nx + 9), (uint32_t)(y + 14), 12, 4, TH_TEXT_MUTED);
 }
@@ -391,8 +444,8 @@ static void paint_toolbar(browser_t* b, int x, int y, int w){
 
     // Back
     int bx = x + 8;
-    gfx_fill_rect((uint32_t)bx, (uint32_t)by, 32, 24, TH_FIELD);
-    gfx_draw_rect((uint32_t)bx, (uint32_t)by, 32, 24, TH_PANEL_EDGE);
+    gfx_fill_round_rect((uint32_t)bx, (uint32_t)by, 32, 24, 5, TH_CONTROL);
+    gfx_draw_round_rect((uint32_t)bx, (uint32_t)by, 32, 24, 5, TH_CONTROL_EDGE);
     {
         uint32_t c = t->history_n ? TH_TEXT : TH_TEXT_DIM;
         for (int k = 0; k < 6; k++){
@@ -404,16 +457,16 @@ static void paint_toolbar(browser_t* b, int x, int y, int w){
 
     // Reload
     int rx = x + 46;
-    gfx_fill_rect((uint32_t)rx, (uint32_t)by, 32, 24, TH_FIELD);
-    gfx_draw_rect((uint32_t)rx, (uint32_t)by, 32, 24, TH_PANEL_EDGE);
+    gfx_fill_round_rect((uint32_t)rx, (uint32_t)by, 32, 24, 5, TH_CONTROL);
+    gfx_draw_round_rect((uint32_t)rx, (uint32_t)by, 32, 24, 5, TH_CONTROL_EDGE);
     gfx_draw_circle(rx + 16, by + 12, 7, t->url[0] ? TH_TEXT : TH_TEXT_DIM);
-    gfx_fill_rect((uint32_t)(rx + 16), (uint32_t)(by + 3), 8, 5, TH_FIELD);
+    gfx_fill_rect((uint32_t)(rx + 16), (uint32_t)(by + 3), 8, 5, TH_CONTROL);
 
     // Address field
     int fx = x + 84, fw = w - 84 - 52;
-    gfx_fill_rect((uint32_t)fx, (uint32_t)by, (uint32_t)fw, 24, TH_FIELD);
-    gfx_draw_rect((uint32_t)fx, (uint32_t)by, (uint32_t)fw, 24,
-                  b->url_focus ? TH_ACCENT : TH_PANEL_EDGE);
+    gfx_fill_round_rect((uint32_t)fx, (uint32_t)by, (uint32_t)fw, 24, 6, TH_FIELD);
+    gfx_draw_round_rect((uint32_t)fx, (uint32_t)by, (uint32_t)fw, 24, 6,
+                        b->url_focus ? TH_ACCENT : TH_CONTROL_EDGE);
 
     // A padlock for https, so the security state is visible rather than
     // implied by the text of the URL.
@@ -446,8 +499,8 @@ static void paint_toolbar(browser_t* b, int x, int y, int w){
 
     // Go
     int gx = x + w - 46;
-    gfx_fill_rect((uint32_t)gx, (uint32_t)by, 38, 24, TH_ACCENT_DIM);
-    gfx_text((uint32_t)(gx + 11), (uint32_t)(by + 4), "Go", TH_TEXT, GFX_TRANSPARENT);
+    gfx_fill_round_rect((uint32_t)gx, (uint32_t)by, 38, 24, 6, TH_ACCENT);
+    gfx_text((uint32_t)(gx + 11), (uint32_t)(by + 4), "Go", TH_ACCENT_TEXT, GFX_TRANSPARENT);
 }
 
 static void paint_status(browser_t* b, int x, int y, int w){
@@ -487,8 +540,7 @@ static void paint_status(browser_t* b, int x, int y, int w){
 static void paint_scrollbar(browser_t* b, int x, int y, int h){
     tab_t* t = cur_tab(b);
 
-    gfx_fill_rect((uint32_t)x, (uint32_t)y, SCROLLBAR_W, (uint32_t)h, TH_TASKBAR);
-    gfx_vline((uint32_t)x, (uint32_t)y, (uint32_t)h, TH_PANEL_EDGE);
+    gfx_fill_rect((uint32_t)x, (uint32_t)y, SCROLLBAR_W, (uint32_t)h, TH_PAGE_BG);
 
     if (!t->page || t->page->height <= h) return;
 
@@ -498,8 +550,8 @@ static void paint_scrollbar(browser_t* b, int x, int y, int h){
     int max_scroll = t->page->height - h;
     int pos = max_scroll > 0 ? (t->scroll * span / max_scroll) : 0;
 
-    gfx_fill_rect((uint32_t)(x + 3), (uint32_t)(y + pos), SCROLLBAR_W - 5, (uint32_t)thumb,
-                  TH_TEXT_DIM);
+    gfx_fill_round_rect((uint32_t)(x + 3), (uint32_t)(y + pos), SCROLLBAR_W - 6, (uint32_t)thumb,
+                        3, TH_TEXT_DIM);
 }
 
 static void paint(wm_window_t* win, browser_t* b){
@@ -515,7 +567,7 @@ static void paint(wm_window_t* win, browser_t* b){
     tab_t* t = cur_tab(b);
     int vy = y + TABBAR_H + TOOLBAR_H;
 
-    gfx_fill_rect((uint32_t)x, (uint32_t)vy, (uint32_t)b->view_w, (uint32_t)b->view_h, TH_FIELD);
+    gfx_fill_rect((uint32_t)x, (uint32_t)vy, (uint32_t)b->view_w, (uint32_t)b->view_h, TH_PAGE_BG);
 
     gfx_clip_set((uint32_t)x, (uint32_t)vy, (uint32_t)b->view_w, (uint32_t)b->view_h);
     if (t->state == BR_LOADING){
@@ -675,7 +727,7 @@ static void relayout_all(browser_t* b, int view_h){
         strncpy(keep, t->title, sizeof(keep) - 1);
         keep[sizeof(keep) - 1] = 0;
 
-        layout_tab(b, t, t->src, t->src_len, t->src_plain);
+        layout_tab(b, t, t->src, t->src_len, t->src_plain, t->src_keep_chrome);
 
         strncpy(t->title, keep, sizeof(t->title) - 1);
         t->title[sizeof(t->title) - 1] = 0;
@@ -691,6 +743,12 @@ static void relayout_all(browser_t* b, int view_h){
     }
 }
 
+void app_browser_relayout(void){
+    if (!active) return;
+    relayout_all(active, active->view_h);
+    wm_invalidate();
+}
+
 static void on_tick(browser_t* b){
     for (int i = 0; i < MAX_TABS; i++){
         tab_t* t = &b->tabs[i];
@@ -698,11 +756,26 @@ static void on_tick(browser_t* b){
 
         int is_plain = t->resp.content_type[0]
                     && kstrnicmp(t->resp.content_type, "text/plain", 10) == 0;
-        layout_tab(b, t, (const char*)t->resp.body, t->resp.body_len, is_plain);
+        layout_tab(b, t, (const char*)t->resp.body, t->resp.body_len, is_plain, 0);
 
         strncpy(t->url, t->resp.final_url, URL_MAX - 1);
         t->url[URL_MAX - 1] = 0;
         t->url_len = (int)strlen(t->url);
+
+        // Two fallbacks, cheapest first. A page that laid out to almost
+        // nothing gets a second pass with the reader-mode heuristics off: on
+        // a site whose whole body sits inside a <nav>, or under a class name
+        // this renderer treats as furniture, those heuristics are what
+        // emptied it, and showing the menus beats showing a void.
+        int empty = (!is_plain && html_text_len(t->page) < EMPTY_CHARS);
+        if (empty){
+            layout_tab(b, t, (const char*)t->resp.body, t->resp.body_len, is_plain, 1);
+            empty = (html_text_len(t->page) < EMPTY_CHARS);
+        }
+        // Still nothing, and not simply a redirect page whose only job was
+        // to carry a meta refresh -- those are supposed to be empty.
+        if (empty && !(t->page && t->page->refresh[0]))
+            show_empty_notice(b, t);
 
         if (!t->page || !t->page->title[0]){
             url_t u;
