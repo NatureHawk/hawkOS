@@ -12,6 +12,7 @@
 #include "header/kheap.h"
 #include "header/kstring.h"
 #include "header/task.h"
+#include "header/sync.h"
 #include "header/tls.h"
 #include "header/kprintf.h"
 
@@ -24,6 +25,7 @@ extern volatile unsigned long long ticks;
 #define HEADER_CAP    8192u
 #define MAX_REDIRECTS 5
 #define STALL_MS      12000
+#define FIRST_BYTE_MS 30000
 
 // ------------------------------------------------------------------- URLs
 
@@ -85,8 +87,30 @@ void url_resolve(const url_t* base, const char* ref, char* out, uint32_t cap){
         ksnprintf(out, cap, "%s%s", base->https ? "https:" : "http:", ref);
         return;
     }
+
+    // The authority carries the port whenever it is not the scheme's default.
+    // Dropping it sent every root-relative link on a page served from
+    // host:8090 to port 80 on the same host, where nothing was listening.
+    char host[HOST_MAX + 8];
+    if (base->port != (base->https ? 443 : 80))
+        ksnprintf(host, sizeof(host), "%s:%u", base->host, base->port);
+    else
+        ksnprintf(host, sizeof(host), "%s", base->host);
+
     if (ref[0] == '/'){                                  // root-relative
-        ksnprintf(out, cap, "%s%s%s", scheme, base->host, ref);
+        ksnprintf(out, cap, "%s%s%s", scheme, host, ref);
+        return;
+    }
+
+    // A bare query replaces the query of the current path, not the file name
+    // -- "?page=2" on /results?page=1 is /results?page=2.
+    if (ref[0] == '?'){
+        char path[URL_MAX];
+        strncpy(path, base->path, sizeof(path) - 1);
+        path[sizeof(path) - 1] = 0;
+        char* q = strchr(path, '?');
+        if (q) *q = 0;
+        ksnprintf(out, cap, "%s%s%s%s", scheme, host, path, ref);
         return;
     }
 
@@ -94,12 +118,14 @@ void url_resolve(const url_t* base, const char* ref, char* out, uint32_t cap){
     char dir[URL_MAX];
     strncpy(dir, base->path, sizeof(dir) - 1);
     dir[sizeof(dir) - 1] = 0;
+    char* qm = strchr(dir, '?');                 // a slash in the query is not a directory
+    if (qm) *qm = 0;
     char* slash = dir;
     char* last = dir;
     for (; *slash; slash++) if (*slash == '/') last = slash;
     last[1] = 0;
 
-    ksnprintf(out, cap, "%s%s%s%s", scheme, base->host, dir, ref);
+    ksnprintf(out, cap, "%s%s%s%s", scheme, host, dir, ref);
 }
 
 // --------------------------------------------------------------- fetching
@@ -179,16 +205,18 @@ static uint32_t dechunk(uint8_t* buf, uint32_t len){
     return out;
 }
 
-static int fetch_once(const url_t* u, http_response_t* r,
-                      http_progress_t cb, void* ctx,
-                      char* redirect_out, uint32_t redirect_cap){
+// Resolves, connects and (for https) runs the handshake. On failure writes a
+// reason into err and returns -1 with nothing left open.
+static int open_conn(const url_t* u, tcp_conn_t** pc, tls_conn_t** pt,
+                     char* err, uint32_t errcap, http_progress_t cb, void* ctx){
     char msg[128];
+    *pc = 0; *pt = 0;
 
     ipv4_t ip;
     ksnprintf(msg, sizeof(msg), "Resolving %s", u->host);
     report(cb, ctx, msg);
     if (dns_resolve(u->host, &ip, 6000) != 0){
-        ksnprintf(r->error, sizeof(r->error), "cannot resolve %s", u->host);
+        ksnprintf(err, errcap, "cannot resolve %s", u->host);
         return -1;
     }
 
@@ -197,13 +225,12 @@ static int fetch_once(const url_t* u, http_response_t* r,
     report(cb, ctx, msg);
 
     tcp_conn_t* c = tcp_open(ip, u->port);
-    if (!c){ strcpy(r->error, "no free connection"); return -1; }
+    if (!c){ ksnprintf(err, errcap, "cannot open a connection: %s", tcp_open_error()); return -1; }
 
-    unsigned long long deadline = ticks + 800;                 // 8 s to connect
-    while (tcp_state(c) == TCP_SYN_SENT && ticks < deadline) task_sleep(10);
+    tcp_wait_connect(c, 8000);                                 // 8 s to connect
 
     if (tcp_state(c) != TCP_ESTABLISHED){
-        strcpy(r->error, "connection refused or timed out");
+        ksnprintf(err, errcap, "connection refused or timed out");
         tcp_free(c);
         return -1;
     }
@@ -213,32 +240,55 @@ static int fetch_once(const url_t* u, http_response_t* r,
         report(cb, ctx, "TLS handshake");
         tls = tls_client_open(c, u->host);
         if (!tls){
-            ksnprintf(r->error, sizeof(r->error), "%s", tls_last_error());
+            ksnprintf(err, errcap, "%s", tls_last_error());
             tcp_close(c); tcp_free(c);
             return -1;
         }
     }
+    *pc = c; *pt = tls;
+    return 0;
+}
 
-    // Identify honestly, ask for an unencoded body, and close after one
-    // response: without Connection: close a server may hold the socket open
-    // and this client has no keep-alive logic to take advantage of it.
+static void close_conn(tcp_conn_t* c, tls_conn_t* tls){
+    if (tls) tls_close(tls);
+    if (c){ tcp_close(c); tcp_free(c); }
+}
+
+// Identify honestly, ask for an unencoded body, and close after one
+// response: without Connection: close a server may hold the socket open
+// and this client has no keep-alive logic to take advantage of it.
+static int send_get(const url_t* u, tcp_conn_t* c, tls_conn_t* tls){
+    char host[HOST_MAX + 8];
+    if (u->port != (u->https ? 443 : 80)) ksnprintf(host, sizeof(host), "%s:%u", u->host, u->port);
+    else                                  ksnprintf(host, sizeof(host), "%s", u->host);
+
     char req[1024];
     int reqlen = ksnprintf(req, sizeof(req),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
-        "User-Agent: hawkOS/0.6\r\n"
-        "Accept: text/html,text/plain,*/*\r\n"
+        "User-Agent: hawkOS/0.9\r\n"
+        "Accept: text/html,text/plain,image/png,image/jpeg,image/gif,*/*\r\n"
         "Accept-Encoding: identity\r\n"
         "Connection: close\r\n"
-        "\r\n", u->path, u->host);
+        "\r\n", u->path, host);
+
+    return tls ? tls_write(tls, req, (uint32_t)reqlen)
+               : tcp_write(c, req, (uint32_t)reqlen);
+}
+
+static int fetch_once(const url_t* u, http_response_t* r,
+                      http_progress_t cb, void* ctx,
+                      char* redirect_out, uint32_t redirect_cap){
+    char msg[128];
+
+    tcp_conn_t* c;
+    tls_conn_t* tls;
+    if (open_conn(u, &c, &tls, r->error, sizeof(r->error), cb, ctx) != 0) return -1;
 
     report(cb, ctx, "Sending request");
-    int wrote = tls ? tls_write(tls, req, (uint32_t)reqlen)
-                    : tcp_write(c, req, (uint32_t)reqlen);
-    if (wrote < 0){
+    if (send_get(u, c, tls) < 0){
         strcpy(r->error, "could not send request");
-        if (tls) tls_close(tls);
-        tcp_close(c); tcp_free(c);
+        close_conn(c, tls);
         return -1;
     }
 
@@ -270,8 +320,11 @@ static int fetch_once(const url_t* u, http_response_t* r,
         } else if (n < 0){
             done = 1;                                   // peer closed
         } else {
-            if (ticks - last_data > STALL_MS / 10) done = 1;
-            task_sleep(10);
+            // Twelve seconds of silence mid-response is a dead server. Before
+            // the first byte it may just be a slow one -- a gateway that has
+            // to ask YouTube before it can answer -- so that wait is longer.
+            if (ticks - last_data > (total ? STALL_MS : FIRST_BYTE_MS) / 10) done = 1;
+            else tcp_wait_data(c, 100);          // woken when bytes arrive
         }
     }
     buf[total] = 0;
@@ -393,6 +446,245 @@ void http_response_free(http_response_t* r){
     if (r->body) kfree(r->body);
     r->body = 0;
     r->body_len = 0;
+}
+
+// ------------------------------------------------------------- streaming
+//
+// For responses that should not, or cannot, be held whole: a video that runs
+// for minutes, or anything whose end is simply "when the server stops". The
+// caller pulls the body in pieces at its own pace. Headers are read and
+// redirects followed inside http_open, so what comes back is either a stream
+// positioned at the first body byte or nothing.
+
+#define RAW_CAP (32u * 1024u)
+
+struct http_stream {
+    tcp_conn_t* tcp;
+    tls_conn_t* tls;
+    int         status;
+    char        content_type[64];
+    int32_t     content_length;     // -1 when the server did not say
+    uint32_t    delivered;
+    char        final_url[URL_MAX];
+    char        headers[2048];      // the response headers, for http_header
+
+    // Bytes off the wire not yet handed out. Header parsing reads past the
+    // blank line, and chunk framing has to be peeled off in place, so reads
+    // go through this rather than straight into the caller's buffer.
+    uint8_t     raw[RAW_CAP];
+    uint32_t    raw_off, raw_len;
+
+    int         chunked;
+    int         chunk_state;        // 0 size line, 1 data, 2 CRLF after data
+    uint32_t    chunk_left;
+    int         chunk_digits, chunk_ext;
+    int         eof;
+};
+
+static int stream_fill(http_stream_t* s){
+    if (s->raw_off < s->raw_len) return (int)(s->raw_len - s->raw_off);
+    s->raw_off = s->raw_len = 0;
+    int n = s->tls ? tls_read(s->tls, s->raw, RAW_CAP)
+                   : tcp_read(s->tcp, s->raw, RAW_CAP);
+    if (n > 0) s->raw_len = (uint32_t)n;
+    return n;
+}
+
+// Reads the status line and headers into `hdr` (NUL-terminated), leaving
+// whatever followed them in the raw buffer. -1 on timeout or close.
+static int stream_headers(http_stream_t* s, char* hdr, uint32_t cap){
+    uint32_t n = 0;
+    unsigned long long last = ticks;
+    // A proxy that has to fetch and start transcoding before it can answer
+    // takes longer than a web server, so the wait here is generous.
+    while (ticks - last < 3000){
+        int r = stream_fill(s);
+        if (r < 0) return -1;
+        if (r == 0){ tcp_wait_data(s->tcp, 100); continue; }
+        last = ticks;
+        while (s->raw_off < s->raw_len){
+            char c = (char)s->raw[s->raw_off++];
+            if (n < cap - 1) hdr[n++] = c;
+            hdr[n] = 0;
+            if (n >= 4 && hdr[n-1] == '\n' && hdr[n-2] == '\r' && hdr[n-3] == '\n' && hdr[n-4] == '\r')
+                return 0;
+            if (n >= 2 && hdr[n-1] == '\n' && hdr[n-2] == '\n') return 0;
+        }
+    }
+    return -1;
+}
+
+http_stream_t* http_open(const char* url, http_progress_t cb, void* ctx,
+                         char* err, uint32_t errcap){
+    char current[URL_MAX];
+    strncpy(current, url, sizeof(current) - 1);
+    current[sizeof(current) - 1] = 0;
+    char dummy[8];
+    if (!err || !errcap){ err = dummy; errcap = sizeof(dummy); }
+    err[0] = 0;
+
+    if (!net_configured()){ ksnprintf(err, errcap, "network is not configured"); return 0; }
+
+    char* hdr = (char*)kmalloc(HEADER_CAP);
+    if (!hdr){ ksnprintf(err, errcap, "out of memory"); return 0; }
+
+    for (int hop = 0; hop <= MAX_REDIRECTS; hop++){
+        url_t u;
+        if (url_parse(current, &u) != 0){
+            ksnprintf(err, errcap, "cannot parse URL: %s", current);
+            break;
+        }
+        if (u.https && !tls_available()){
+            ksnprintf(err, errcap, "https is not supported in this build");
+            break;
+        }
+
+        http_stream_t* s = (http_stream_t*)kmalloc(sizeof(http_stream_t));
+        if (!s){ ksnprintf(err, errcap, "out of memory"); break; }
+        memset(s, 0, sizeof(*s));
+        s->content_length = -1;
+        strncpy(s->final_url, current, sizeof(s->final_url) - 1);
+
+        if (open_conn(&u, &s->tcp, &s->tls, err, errcap, cb, ctx) != 0){ kfree(s); break; }
+        report(cb, ctx, "Sending request");
+        if (send_get(&u, s->tcp, s->tls) < 0){
+            ksnprintf(err, errcap, "could not send request");
+            http_close(s);
+            break;
+        }
+        report(cb, ctx, "Waiting for response");
+        if (stream_headers(s, hdr, HEADER_CAP) != 0){
+            ksnprintf(err, errcap, "no response from server");
+            http_close(s);
+            break;
+        }
+
+        if (kstrnicmp(hdr, "HTTP/", 5) == 0){
+            const char* sp = strchr(hdr, ' ');
+            if (sp) s->status = (sp[1] - '0') * 100 + (sp[2] - '0') * 10 + (sp[3] - '0');
+        }
+
+        if (s->status >= 300 && s->status < 400){
+            char loc[URL_MAX];
+            header_str(hdr, "Location", loc, sizeof(loc));
+            if (loc[0]){
+                char next[URL_MAX];
+                url_resolve(&u, loc, next, sizeof(next));
+                strncpy(current, next, sizeof(current) - 1);
+                current[sizeof(current) - 1] = 0;
+                http_close(s);
+                continue;
+            }
+        }
+
+        header_str(hdr, "Content-Type", s->content_type, sizeof(s->content_type));
+        strncpy(s->headers, hdr, sizeof(s->headers) - 1);
+        s->headers[sizeof(s->headers) - 1] = 0;
+        char te[32];
+        header_str(hdr, "Transfer-Encoding", te, sizeof(te));
+        s->chunked = te[0] && strstr(te, "chunked");
+        char cl[16];
+        header_str(hdr, "Content-Length", cl, sizeof(cl));
+        if (cl[0] && !s->chunked) s->content_length = header_int(hdr, "Content-Length");
+
+        kfree(hdr);
+        return s;
+    }
+
+    if (!err[0]) ksnprintf(err, errcap, "too many redirects");
+    kfree(hdr);
+    return 0;
+}
+
+int http_status(const http_stream_t* s){ return s ? s->status : 0; }
+
+int http_header(const http_stream_t* s, const char* name, char* out, uint32_t cap){
+    if (!s || !cap) return -1;
+    header_str(s->headers, name, out, cap);
+    return out[0] ? 0 : -1;
+}
+const char* http_content_type(const http_stream_t* s){ return s ? s->content_type : ""; }
+int32_t http_content_length(const http_stream_t* s){ return s ? s->content_length : -1; }
+
+static int hexdig(uint8_t c){
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int http_read(http_stream_t* s, uint8_t* buf, uint32_t cap){
+    if (!s || s->eof) return -1;
+    if (s->content_length >= 0 && s->delivered >= (uint32_t)s->content_length){
+        s->eof = 1;
+        return -1;
+    }
+
+    int r = stream_fill(s);
+    if (r < 0){ s->eof = 1; return -1; }
+    if (r == 0) return 0;
+
+    if (!s->chunked){
+        uint32_t n = s->raw_len - s->raw_off;
+        if (n > cap) n = cap;
+        if (s->content_length >= 0 && n > (uint32_t)s->content_length - s->delivered)
+            n = (uint32_t)s->content_length - s->delivered;
+        memcpy(buf, s->raw + s->raw_off, n);
+        s->raw_off   += n;
+        s->delivered += n;
+        return (int)n;
+    }
+
+    uint32_t out = 0;
+    while (s->raw_off < s->raw_len && out < cap){
+        uint8_t c = s->raw[s->raw_off];
+        if (s->chunk_state == 0){
+            s->raw_off++;
+            int v = hexdig(c);
+            if (c == '\n'){
+                if (!s->chunk_digits) continue;            // blank line between chunks
+                if (s->chunk_left == 0){ s->eof = 1; break; }
+                s->chunk_state = 1;
+            } else if (c == ';'){
+                s->chunk_ext = 1;
+            } else if (v >= 0 && !s->chunk_ext){
+                s->chunk_left = s->chunk_left * 16 + (uint32_t)v;
+                s->chunk_digits++;
+            }
+        } else if (s->chunk_state == 1){
+            uint32_t n = s->raw_len - s->raw_off;
+            if (n > s->chunk_left) n = s->chunk_left;
+            if (n > cap - out)     n = cap - out;
+            memcpy(buf + out, s->raw + s->raw_off, n);
+            s->raw_off    += n;
+            s->chunk_left -= n;
+            out           += n;
+            if (s->chunk_left == 0) s->chunk_state = 2;
+        } else {
+            s->raw_off++;
+            if (c == '\n'){
+                s->chunk_state  = 0;
+                s->chunk_digits = 0;
+                s->chunk_ext    = 0;
+                s->chunk_left   = 0;
+            }
+        }
+    }
+    s->delivered += out;
+    if (out == 0 && s->eof) return -1;
+    return (int)out;
+}
+
+void http_wait(http_stream_t* s, uint32_t timeout_ms){
+    if (!s) return;
+    if (s->raw_off < s->raw_len) return;          // already buffered
+    tcp_wait_data(s->tcp, timeout_ms);
+}
+
+void http_close(http_stream_t* s){
+    if (!s) return;
+    close_conn(s->tcp, s->tls);
+    kfree(s);
 }
 
 // --------------------------------------------------- redirect unwrapping

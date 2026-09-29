@@ -13,6 +13,7 @@
 #define KEY_END     0x108
 #define KEY_DELETE  0x109
 #define KEY_F1      0x110
+#define KEY_F2      0x111
 
 void kbd_init(void);
 

@@ -61,13 +61,17 @@ typedef enum {
     HTML_BOX_BULLET,        // an unordered-list marker
     HTML_BOX_FRAME,         // an image placeholder's border
     HTML_BOX_FIELD,         // a text input
-    HTML_BOX_BUTTON         // a submit or push button
+    HTML_BOX_BUTTON,        // a submit or push button
+    HTML_BOX_VIDEO          // a <video>: the browser plays its src into it
 } html_box_kind_t;
 
 typedef struct {
     int32_t  x, y, w, h;
     uint8_t  kind;          // html_box_kind_t
     uint32_t color;
+    int32_t  link;          // enclosing link, or -1: a thumbnail inside <a> is clickable
+    uint32_t src_off;       // FRAME and VIDEO: the resource URL, as a slice of the
+    uint32_t src_len;       //   text arena (src_len 0 when there is none)
 } html_box_t;
 
 typedef struct {
@@ -75,6 +79,29 @@ typedef struct {
     uint32_t href_off;      // slice of the text arena holding the URL
     uint32_t href_len;
 } html_link_t;
+
+// Forms. Enough to search: a form's action, and the fields that go with it
+// -- text inputs the user can type into, hidden inputs carried along, and
+// submit buttons. Every form is submitted as a GET, which is what a search
+// form is, and what the POST forms that matter here (DuckDuckGo Lite's) also
+// accept.
+typedef struct {
+    uint32_t action_off, action_len;    // text arena slice; len 0 = the page itself
+} html_form_t;
+
+typedef enum {
+    HTML_FIELD_TEXT = 0,
+    HTML_FIELD_HIDDEN,
+    HTML_FIELD_SUBMIT
+} html_field_kind_t;
+
+typedef struct {
+    int32_t  box;                       // the box drawn for it, or -1 (hidden)
+    int32_t  form;                      // index into forms[], or -1
+    uint8_t  kind;                      // html_field_kind_t
+    uint32_t name_off, name_len;
+    uint32_t value_off, value_len;
+} html_field_t;
 
 typedef struct {
     char*        text;
@@ -85,6 +112,10 @@ typedef struct {
     uint32_t     box_n, box_cap;
     html_link_t* links;
     uint32_t     link_n, link_cap;
+    html_form_t* forms;
+    uint32_t     form_n, form_cap;
+    html_field_t* fields;
+    uint32_t     field_n, field_cap;
     int32_t      height;
     char         title[128];
 
@@ -119,8 +150,40 @@ void         html_free(html_page_t* p);
 // Draws the part of the page visible in the given viewport rectangle.
 void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll);
 
+// Text selection. A position is a byte offset into one run of the display list;
+// runs are in reading order, so comparing (run, offset) pairs orders positions
+// in the document. run == -1 means "no position", which is what a page with no
+// text under the pointer returns.
+typedef struct { int32_t run, off; } html_pos_t;
+
+int        html_pos_cmp(html_pos_t a, html_pos_t b);       // <0, 0, >0
+html_pos_t html_text_pos(const html_page_t* p, int px, int py);
+html_pos_t html_text_start(const html_page_t* p);
+html_pos_t html_text_end(const html_page_t* p);
+
+// html_paint with the text from `a` up to `b` (a <= b) drawn on a highlight.
+// Pass a.run < 0 for no selection.
+void html_paint_sel(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll,
+                    html_pos_t a, html_pos_t b);
+
+// The selected text as plain text: a newline where the selection crosses onto a
+// new line, a space where two runs on one line have a gap between them.
+// Returns the length written (NUL-terminated within cap).
+uint32_t   html_selection_text(const html_page_t* p, html_pos_t a, html_pos_t b,
+                               char* out, uint32_t cap);
+
 // Returns the index of the link at page coordinates (px, py), or -1.
 int  html_hit_link(const html_page_t* p, int px, int py);
 
 // Copies link `idx`'s href into out. Returns 0 on success.
 int  html_link_href(const html_page_t* p, int idx, char* out, uint32_t cap);
+
+// The text or submit field whose box contains page point (px, py), or -1.
+int  html_field_at(const html_page_t* p, int px, int py);
+
+// Copies `len` bytes of the text arena at `off` into out, NUL-terminated.
+void html_slice(const html_page_t* p, uint32_t off, uint32_t len, char* out, uint32_t cap);
+
+// Copies box `idx`'s resource URL (an image's or a video's src, as written in
+// the markup) into out. Returns 0 if the box has one.
+int  html_box_src(const html_page_t* p, uint32_t idx, char* out, uint32_t cap);

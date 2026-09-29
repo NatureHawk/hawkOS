@@ -144,6 +144,28 @@ static int boxes_grow(html_page_t* p){
     return 0;
 }
 
+static int forms_grow(html_page_t* p){
+    if (p->form_n < p->form_cap) return 0;
+    uint32_t cap = p->form_cap ? p->form_cap * 2 : 4;
+    html_form_t* n = (html_form_t*)kmalloc(cap * sizeof(html_form_t));
+    if (!n) return -1;
+    if (p->forms){ memcpy(n, p->forms, p->form_n * sizeof(html_form_t)); kfree(p->forms); }
+    p->forms = n;
+    p->form_cap = cap;
+    return 0;
+}
+
+static int fields_grow(html_page_t* p){
+    if (p->field_n < p->field_cap) return 0;
+    uint32_t cap = p->field_cap ? p->field_cap * 2 : 16;
+    html_field_t* n = (html_field_t*)kmalloc(cap * sizeof(html_field_t));
+    if (!n) return -1;
+    if (p->fields){ memcpy(n, p->fields, p->field_n * sizeof(html_field_t)); kfree(p->fields); }
+    p->fields = n;
+    p->field_cap = cap;
+    return 0;
+}
+
 static int links_grow(html_page_t* p){
     if (p->link_n < p->link_cap) return 0;
     uint32_t cap = p->link_cap ? p->link_cap * 2 : LINK_CAP_INIT;
@@ -358,6 +380,7 @@ typedef struct {
     int         pending_block;
 
     int   link;             // current link index, or -1
+    int   form;             // the <form> being laid out, or -1
 
     int   ord[8];           // <ol> counters, one per nesting level
     int   list_depth;
@@ -386,6 +409,9 @@ static void emit_box(lay_t* L, int kind, int x, int y, int w, int h, uint32_t co
     b->x = x; b->y = y; b->w = w; b->h = h;
     b->kind = (uint8_t)kind;
     b->color = color;
+    b->link = L->link;
+    b->src_off = 0;
+    b->src_len = 0;
 
     // Only a box emitted into a line that has already started belongs to that
     // line and travels with its alignment. Rules, <pre> panels and list
@@ -751,24 +777,43 @@ static void emit_words(lay_t* L, const char* s){
     }
 }
 
-// Form controls.
-//
-// Nothing here can be typed into or submitted -- there is no input handling
-// behind these -- but drawing them is not decoration. A search page rendered
-// without its search box looks broken in a way that a page rendered with an
-// inert one does not: the box is most of what tells a reader where they are,
-// and the buttons are where the page's own words for its actions live.
+// Records a form field. `box` is the box just emitted for it, or -1.
+static void add_field(lay_t* L, int kind, int box, const char* attrs, uint32_t alen){
+    char name[64], value[256];
+    if (tag_attr(attrs, alen, "name", name, sizeof(name)) != 0) name[0] = 0;
+    if (tag_attr(attrs, alen, "value", value, sizeof(value)) != 0) value[0] = 0;
+    if (fields_grow(L->p) != 0) return;
+    uint32_t noff = arena_put(L->p, name, strlen(name));
+    uint32_t voff = arena_put(L->p, value, strlen(value));
+    if (noff == 0xFFFFFFFFu || voff == 0xFFFFFFFFu) return;
+    html_field_t* f = &L->p->fields[L->p->field_n++];
+    f->box = box;
+    f->form = L->form;
+    f->kind = (uint8_t)kind;
+    f->name_off = noff;  f->name_len = strlen(name);
+    f->value_off = voff; f->value_len = strlen(value);
+}
+
+// Form controls. Text inputs can be typed into and a form submitted from
+// them (the browser does the typing; see its field handling) -- but even an
+// inert control is not decoration: a search page rendered without its search
+// box looks broken, and the buttons are where the page's own words for its
+// actions live.
 static void emit_input(lay_t* L, const char* attrs, uint32_t alen){
     char type[24];
     if (tag_attr(attrs, alen, "type", type, sizeof(type)) != 0 || !type[0])
         strncpy(type, "text", sizeof(type) - 1);
-    if (kstricmp(type, "hidden") == 0 || kstricmp(type, "image") == 0) return;
+    if (kstricmp(type, "hidden") == 0){ add_field(L, HTML_FIELD_HIDDEN, -1, attrs, alen); return; }
+    if (kstricmp(type, "image") == 0) return;
 
     char label[96];
     if (tag_attr(attrs, alen, "value", label, sizeof(label)) != 0) label[0] = 0;
 
     int button = (kstricmp(type, "submit") == 0 || kstricmp(type, "button") == 0
                || kstricmp(type, "reset")  == 0);
+    int typable = !button && (kstricmp(type, "text") == 0 || kstricmp(type, "search") == 0
+               || kstricmp(type, "email") == 0 || kstricmp(type, "url") == 0
+               || kstricmp(type, "tel") == 0 || kstricmp(type, "number") == 0);
 
     int face = HTML_FACE_BODY;
     int h    = face_h(face) + 8;
@@ -799,8 +844,13 @@ static void emit_input(lay_t* L, const char* attrs, uint32_t alen){
     L->pending_space = 0;
 
     int x0 = L->x;
+    uint32_t before = L->p->box_n;
     emit_box(L, button ? HTML_BOX_BUTTON : HTML_BOX_FIELD,
              x0, L->y - 4, w, h, button ? COL_BUTTON : COL_FIELD);
+    if (L->p->box_n > before){
+        if (typable) add_field(L, HTML_FIELD_TEXT, (int)before, attrs, alen);
+        else if (kstricmp(type, "submit") == 0) add_field(L, HTML_FIELD_SUBMIT, (int)before, attrs, alen);
+    }
 
     if (label[0]){
         sty_t save = L->sty;
@@ -818,6 +868,23 @@ static void emit_input(lay_t* L, const char* attrs, uint32_t alen){
 // its own sake: it keeps the page's vertical rhythm honest, and alt text is
 // frequently the caption a reader actually wanted. When a decoder lands it
 // draws into exactly this rectangle.
+// Attaches a resource URL to the box just emitted. Lazy-loading pages put the
+// real address in data-src and a placeholder (often a data: URI, which there
+// is nothing to fetch for) in src, so data-src wins when both are there.
+static void box_set_src(lay_t* L, const char* attrs, uint32_t alen){
+    if (!L->p->box_n) return;
+    char src[URL_MAX];
+    if (tag_attr(attrs, alen, "data-src", src, sizeof(src)) != 0 || !src[0])
+        if (tag_attr(attrs, alen, "src", src, sizeof(src)) != 0) return;
+    if (!src[0] || kstrnicmp(src, "data:", 5) == 0) return;
+    uint32_t n = strlen(src);
+    uint32_t off = arena_put(L->p, src, n);
+    if (off == 0xFFFFFFFFu) return;
+    html_box_t* b = &L->p->boxes[L->p->box_n - 1];
+    b->src_off = off;
+    b->src_len = n;
+}
+
 static void emit_image(lay_t* L, const char* attrs, uint32_t alen){
     int aw = attr_int(attrs, alen, "width");
     int ah = attr_int(attrs, alen, "height");
@@ -888,7 +955,9 @@ static void emit_image(lay_t* L, const char* attrs, uint32_t alen){
 
     block_break(L, PARA_GAP);
     int x = line_left(L);
+    uint32_t before = L->p->box_n;
     emit_box(L, HTML_BOX_FRAME, x, L->y, w, h, COL_FRAME);
+    if (L->p->box_n > before) box_set_src(L, attrs, alen);
 
     if (alt[0]){
         // One truncated line rather than a wrapped block: the frame is
@@ -912,6 +981,36 @@ static void emit_image(lay_t* L, const char* attrs, uint32_t alen){
             }
         }
     }
+
+    L->y += h + PARA_GAP;
+    L->x = line_left(L);
+    L->line_first = L->p->run_n;
+    L->line_box_first = L->p->box_n;
+    L->line_h = 0;
+    L->line_asc = 0;
+    L->line_started = 0;
+    L->pending_space = 0;
+}
+
+// A <video> is a black rectangle with its source attached; the browser plays
+// the stream into it. It is sized like an image -- the markup's own width and
+// height, scaled down to the measure -- with 16:9 assumed when the markup is
+// silent, since that is the shape of nearly every video there is.
+static void emit_video(lay_t* L, const char* attrs, uint32_t alen){
+    int aw = attr_int(attrs, alen, "width");
+    int ah = attr_int(attrs, alen, "height");
+    int avail = line_right(L) - line_left(L);
+
+    int w = aw > 0 ? aw : 640;
+    int h = ah > 0 ? ah : (w * 9) / 16;
+    if (w > avail){ h = (int)(((int64_t)h * avail) / w); w = avail; }
+    if (h < 60) h = 60;
+
+    block_break(L, PARA_GAP);
+    int x = line_left(L);
+    uint32_t before = L->p->box_n;
+    emit_box(L, HTML_BOX_VIDEO, x, L->y, w, h, GFX_RGB(0, 0, 0));
+    if (L->p->box_n > before) box_set_src(L, attrs, alen);
 
     L->y += h + PARA_GAP;
     L->x = line_left(L);
@@ -960,6 +1059,7 @@ html_page_t* html_layout_ex(const char* src, uint32_t len, int width, int is_pla
     L.x = L.origin_x;
     L.y = MARGIN;
     L.link = -1;
+    L.form = -1;
     // -1 means "unordered". A stray <li> outside any list gets a bullet
     // rather than being numbered from a counter nothing ever opened.
     for (int d = 0; d < 8; d++) L.ord[d] = -1;
@@ -1154,6 +1254,22 @@ html_page_t* html_layout_ex(const char* src, uint32_t len, int width, int is_pla
                 continue;
             }
 
+            // A form only changes which form the fields after it belong to;
+            // its layout is the ordinary block handling below.
+            if (tag_is(tag, nlen, "form")){
+                if (closing) L.form = -1;
+                else if (forms_grow(p) == 0){
+                    char action[URL_MAX];
+                    if (tag_attr(attrs, alen, "action", action, sizeof(action)) != 0) action[0] = 0;
+                    uint32_t off = arena_put(p, action, strlen(action));
+                    if (off != 0xFFFFFFFFu){
+                        p->forms[p->form_n].action_off = off;
+                        p->forms[p->form_n].action_len = strlen(action);
+                        L.form = (int)p->form_n++;
+                    }
+                }
+            }
+
             if (tag_is(tag, nlen, "input") && !closing){
                 emit_input(&L, attrs, alen);
                 i = (te < len) ? te + 1 : len;
@@ -1175,6 +1291,22 @@ html_page_t* html_layout_ex(const char* src, uint32_t len, int width, int is_pla
 
             if (tag_is(tag, nlen, "img") && !closing){
                 emit_image(&L, attrs, alen);
+                i = (te < len) ? te + 1 : len;
+                continue;
+            }
+
+            if (tag_is(tag, nlen, "video") && !closing){
+                emit_video(&L, attrs, alen);
+                i = (te < len) ? te + 1 : len;
+                continue;
+            }
+
+            // <video><source src=...></video>: the first source names the
+            // stream when the <video> tag itself did not.
+            if (tag_is(tag, nlen, "source") && !closing){
+                if (p->box_n && p->boxes[p->box_n - 1].kind == HTML_BOX_VIDEO
+                    && p->boxes[p->box_n - 1].src_len == 0)
+                    box_set_src(&L, attrs, alen);
                 i = (te < len) ? te + 1 : len;
                 continue;
             }
@@ -1511,10 +1643,17 @@ void html_free(html_page_t* p){
     if (p->runs)  kfree(p->runs);
     if (p->boxes) kfree(p->boxes);
     if (p->links) kfree(p->links);
+    if (p->forms) kfree(p->forms);
+    if (p->fields) kfree(p->fields);
     kfree(p);
 }
 
 void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll){
+    html_paint_sel(p, vx, vy, vw, vh, scroll, (html_pos_t){ -1, 0 }, (html_pos_t){ -1, 0 });
+}
+
+void html_paint_sel(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll,
+                    html_pos_t sa, html_pos_t sb){
     if (!p) return;
 
     // Boxes first: they are the ground the text sits on. They are also the one
@@ -1540,6 +1679,10 @@ void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll
                               COL_FIELD_BG);
                 gfx_draw_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
                               b->color);
+                break;
+            case HTML_BOX_VIDEO:
+                gfx_fill_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
+                              GFX_RGB(0, 0, 0));
                 break;
             case HTML_BOX_BUTTON:
                 gfx_fill_rect((uint32_t)sx, (uint32_t)sy, (uint32_t)b->w, (uint32_t)b->h,
@@ -1570,6 +1713,27 @@ void html_paint(const html_page_t* p, int vx, int vy, int vw, int vh, int scroll
         int sx = vx + r->x;
         const char* s = p->text + r->off;
 
+        // The selection is laid down first, so the glyphs land on top of it.
+        if (sa.run >= 0 && (int32_t)i >= sa.run && (int32_t)i <= sb.run){
+            uint32_t s0 = ((int32_t)i == sa.run) ? (uint32_t)sa.off : 0;
+            uint32_t s1 = ((int32_t)i == sb.run) ? (uint32_t)sb.off : r->len;
+            if (s1 > r->len) s1 = r->len;
+            if (s0 < s1){
+                int x0 = sx + measure(r->face, s, s0);
+                int x1 = sx + measure(r->face, s, s1);
+                // Words are separate runs with the space between them belonging
+                // to neither, so a selection through a sentence would come out
+                // as a row of tiles. If the run before this one is selected and
+                // on the same line, the gap is part of the selection too.
+                if (s0 == 0 && (int32_t)i > sa.run){
+                    const html_run_t* q = &p->runs[i - 1];
+                    if (r->y - q->y < q->h / 2 && r->x > q->x + q->w) x0 = vx + q->x + q->w;
+                }
+                gfx_fill_rect((uint32_t)x0, (uint32_t)sy, (uint32_t)(x1 - x0), (uint32_t)r->h,
+                              TH_ACCENT_DIM);
+            }
+        }
+
         if (r->face == HTML_FACE_MONO)
             gfx_text_n((uint32_t)sx, (uint32_t)sy, s, r->len, r->color, GFX_TRANSPARENT);
         else
@@ -1590,7 +1754,43 @@ int html_hit_link(const html_page_t* p, int px, int py){
         if (px >= r->x && px < r->x + r->w && py >= r->y && py < r->y + r->h)
             return r->link;
     }
+    // An image inside a link is as much the link as its caption is -- on a
+    // page of video results the thumbnail is what people click.
+    for (uint32_t i = 0; i < p->box_n; i++){
+        const html_box_t* b = &p->boxes[i];
+        if (b->link < 0 || b->kind != HTML_BOX_FRAME) continue;
+        if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h)
+            return b->link;
+    }
     return -1;
+}
+
+int html_field_at(const html_page_t* p, int px, int py){
+    if (!p) return -1;
+    for (uint32_t i = 0; i < p->field_n; i++){
+        const html_field_t* f = &p->fields[i];
+        if (f->box < 0 || (uint32_t)f->box >= p->box_n || f->kind == HTML_FIELD_HIDDEN) continue;
+        const html_box_t* b = &p->boxes[f->box];
+        if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h) return (int)i;
+    }
+    return -1;
+}
+
+void html_slice(const html_page_t* p, uint32_t off, uint32_t len, char* out, uint32_t cap){
+    if (!cap) return;
+    if (!p || !p->text || off + len > p->text_len) { out[0] = 0; return; }
+    uint32_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(out, p->text + off, n);
+    out[n] = 0;
+}
+
+int html_box_src(const html_page_t* p, uint32_t idx, char* out, uint32_t cap){
+    if (!p || idx >= p->box_n || !p->boxes[idx].src_len) return -1;
+    const html_box_t* b = &p->boxes[idx];
+    uint32_t n = b->src_len < cap - 1 ? b->src_len : cap - 1;
+    memcpy(out, p->text + b->src_off, n);
+    out[n] = 0;
+    return 0;
 }
 
 int html_link_href(const html_page_t* p, int idx, char* out, uint32_t cap){
@@ -1600,4 +1800,86 @@ int html_link_href(const html_page_t* p, int idx, char* out, uint32_t cap){
     memcpy(out, p->text + lk->href_off, n);
     out[n] = 0;
     return 0;
+}
+
+// ------------------------------------------------------- text selection
+
+int html_pos_cmp(html_pos_t a, html_pos_t b){
+    if (a.run != b.run) return a.run < b.run ? -1 : 1;
+    return (a.off > b.off) - (a.off < b.off);
+}
+
+html_pos_t html_text_start(const html_page_t* p){
+    html_pos_t r = { -1, 0 };
+    if (p && p->run_n) r.run = 0;
+    return r;
+}
+
+html_pos_t html_text_end(const html_page_t* p){
+    html_pos_t r = { -1, 0 };
+    if (p && p->run_n){ r.run = (int32_t)p->run_n - 1; r.off = (int32_t)p->runs[p->run_n - 1].len; }
+    return r;
+}
+
+// The text position nearest a point on the page: the run whose box is closest
+// (vertical distance first, so a click in the margin beside a line picks that
+// line), then the character boundary within it nearest the pointer.
+html_pos_t html_text_pos(const html_page_t* p, int px, int py){
+    html_pos_t best = { -1, 0 };
+    if (!p) return best;
+
+    int32_t bi = -1;
+    int64_t bscore = 0;
+    for (uint32_t i = 0; i < p->run_n; i++){
+        const html_run_t* r = &p->runs[i];
+        int dy = py < r->y ? r->y - py : (py >= r->y + r->h ? py - (r->y + r->h) + 1 : 0);
+        int dx = px < r->x ? r->x - px : (px > r->x + r->w ? px - (r->x + r->w) : 0);
+        int64_t score = (int64_t)dy * 65536 + dx;
+        if (bi < 0 || score < bscore){ bi = (int32_t)i; bscore = score; }
+    }
+    if (bi < 0) return best;
+
+    const html_run_t* r = &p->runs[bi];
+    const char* s = p->text + r->off;
+    best.run = bi;
+    if (px <= r->x) best.off = 0;
+    else if (px >= r->x + r->w) best.off = (int32_t)r->len;
+    else {
+        int rel = px - r->x, prev = 0;
+        uint32_t k = 0;
+        while (k < r->len){
+            int w2 = measure(r->face, s, k + 1);
+            if ((prev + w2) / 2 > rel) break;
+            prev = w2;
+            k++;
+        }
+        best.off = (int32_t)k;
+    }
+    return best;
+}
+
+uint32_t html_selection_text(const html_page_t* p, html_pos_t a, html_pos_t b,
+                             char* out, uint32_t cap){
+    uint32_t n = 0;
+    if (!cap) return 0;
+    if (!p || a.run < 0 || b.run < 0 || a.run >= (int32_t)p->run_n){ out[0] = 0; return 0; }
+    if (b.run >= (int32_t)p->run_n) b.run = (int32_t)p->run_n - 1;
+
+    for (int32_t i = a.run; i <= b.run; i++){
+        const html_run_t* r = &p->runs[i];
+        uint32_t s0 = (i == a.run) ? (uint32_t)a.off : 0;
+        uint32_t s1 = (i == b.run) ? (uint32_t)b.off : r->len;
+        if (s1 > r->len) s1 = r->len;
+
+        if (i > a.run){
+            const html_run_t* q = &p->runs[i - 1];
+            char sep = 0;
+            if (r->y - q->y >= q->h / 2)             sep = '\n';
+            else if (r->x > q->x + q->w + 1)         sep = ' ';
+            if (sep && n + 1 < cap) out[n++] = sep;
+        }
+        for (uint32_t k = s0; k < s1 && n + 1 < cap; k++) out[n++] = p->text[r->off + k];
+    }
+    out[n] = 0;
+    return n;
 }

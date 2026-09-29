@@ -19,6 +19,7 @@
 #include "header/irqctl.h"
 #include "header/paging.h"
 #include "header/gdt.h"
+#include "header/fpu.h"
 
 extern volatile unsigned long long ticks;
 
@@ -60,6 +61,7 @@ void task_init(void){
     tasks[0].slices     = 0;
     tasks[0].esp        = 0;
     tasks[0].page_dir   = paging_kernel_dir();
+    fpu_init_state(tasks[0].fpu);
     name_copy(tasks[0].name, "kernel");
     current = 0;
 
@@ -78,6 +80,7 @@ int task_create(const char* name, task_fn_t fn, void* arg){
 
     uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
     if (!stack) { irq_restore(f); return -1; }
+    for (int g = 0; g < 4; g++) ((uint32_t*)stack)[g] = TASK_STACK_GUARD;
 
     // Fake the frame task_switch() expects to unwind, with task_trampoline
     // as the return address so a first switch to this task lands there.
@@ -98,6 +101,8 @@ int task_create(const char* name, task_fn_t fn, void* arg){
     t->stack_base = stack;
     t->slices     = 0;
     t->page_dir   = paging_kernel_dir();   // a user process replaces this later
+    fpu_init_state(t->fpu);
+    t->overflowed = 0;
     name_copy(t->name, name);
 
     irq_restore(f);
@@ -126,6 +131,11 @@ static void schedule(void){
     for (int i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_SLEEPING && now >= tasks[i].wake_tick)
             tasks[i].state = TASK_READY;
+        if (tasks[i].state == TASK_BLOCKED && tasks[i].wake_tick && now >= tasks[i].wake_tick){
+            tasks[i].timed_out = 1;
+            tasks[i].wait_obj  = 0;
+            tasks[i].state     = TASK_READY;
+        }
 
         // Reap an exited task once we are no longer standing on its stack.
         if (tasks[i].state == TASK_ZOMBIE && i != current) {
@@ -140,6 +150,18 @@ static void schedule(void){
 
     task_t* prev = &tasks[current];
     task_t* nxt  = &tasks[next];
+
+    // The outgoing task's guard words sit at the very bottom of its stack;
+    // if any has changed, it ran off the end. Reported once per task, since
+    // the damage below is already done and repeating it helps nobody.
+    if (prev->stack_base && prev->state != TASK_ZOMBIE){
+        const uint32_t* g = (const uint32_t*)prev->stack_base;
+        if ((g[0] != TASK_STACK_GUARD || g[3] != TASK_STACK_GUARD) && !prev->overflowed){
+            prev->overflowed = 1;
+            kprintf("[sched] task %u (%s) overflowed its %u KB stack\n",
+                    prev->id, prev->name, TASK_STACK_SIZE / 1024u);
+        }
+    }
 
     if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
     nxt->state = TASK_RUNNING;
@@ -156,12 +178,30 @@ static void schedule(void){
         tss_set_kernel_stack((uint32_t)nxt->stack_base + TASK_STACK_SIZE);
     proc_note_switch(nxt->id);
 
+    // No interrupt handler touches the FPU, so what is in it now is exactly
+    // what the outgoing task left there. The save of a task that has just
+    // exited is wasted but harmless: its slot is not reused until reaped.
+    fpu_save(prev->fpu);
+    fpu_restore(nxt->fpu);
+
     task_switch(&prev->esp, nxt->esp);
     // Execution resumes here whenever this task is scheduled again.
 }
 
+// Timer ticks that found the CPU idle, and ticks in all. Busy time is the
+// difference -- sampled at 100 Hz, which is coarse per tick and accurate over
+// a second.
+static volatile uint32_t idle_ticks = 0, all_ticks = 0;
+
+void sched_load(uint32_t* idle, uint32_t* all){
+    if (idle) *idle = idle_ticks;
+    if (all)  *all  = all_ticks;
+}
+
 void sched_tick(void){
     if (!sched_on) return;
+    all_ticks++;
+    if (current == idle_idx) idle_ticks++;
     schedule();               // already inside an interrupt gate: IF is clear
 }
 
@@ -178,6 +218,39 @@ void task_sleep(uint32_t ms){
     tasks[current].state     = TASK_SLEEPING;
     schedule();
     irq_restore(f);
+}
+
+static uint32_t wait_ticket_ctr = 0;
+
+int task_block_locked(void* obj, uint32_t timeout_ticks){
+    if (!sched_on) return 1;                     // nothing could ever wake us
+    task_t* t = &tasks[current];
+    t->wait_obj    = obj;
+    t->wait_ticket = ++wait_ticket_ctr;
+    t->timed_out   = 0;
+    t->wake_tick   = timeout_ticks ? ticks + timeout_ticks : 0;
+    t->state       = TASK_BLOCKED;
+    schedule();                                  // returns once we are READY and picked
+    return t->timed_out;
+}
+
+int task_wake_obj(void* obj, int all){
+    uint32_t f = irq_save();
+    int n = 0;
+    for (;;){
+        int best = -1;
+        for (int i = 0; i < TASK_MAX; i++){
+            if (tasks[i].state != TASK_BLOCKED || tasks[i].wait_obj != obj) continue;
+            if (best < 0 || (int32_t)(tasks[i].wait_ticket - tasks[best].wait_ticket) < 0) best = i;
+        }
+        if (best < 0) break;
+        tasks[best].wait_obj = 0;
+        tasks[best].state    = TASK_READY;
+        n++;
+        if (!all) break;
+    }
+    irq_restore(f);
+    return n;
 }
 
 void task_exit(void){
@@ -217,7 +290,7 @@ uint32_t task_kernel_stack_top(void){
 }
 
 void task_ps(void){
-    static const char* st[] = { "unused", "ready", "running", "sleeping", "zombie" };
+    static const char* st[] = { "unused", "ready", "running", "sleeping", "zombie", "blocked" };
     uint32_t f = irq_save();
     kprintf("  id  state     slices  name\n");
     for (int i = 0; i < TASK_MAX; i++) {
@@ -231,8 +304,8 @@ void task_ps(void){
 }
 
 const char* task_state_name(int state){
-    static const char* st[] = { "unused", "ready", "running", "sleeping", "zombie" };
-    return (state >= 0 && state <= 4) ? st[state] : "?";
+    static const char* st[] = { "unused", "ready", "running", "sleeping", "zombie", "blocked" };
+    return (state >= 0 && state <= 5) ? st[state] : "?";
 }
 
 int task_snapshot(task_info_t* out, int max){

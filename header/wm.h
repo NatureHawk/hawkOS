@@ -42,7 +42,25 @@ enum {
     // laid-out geometry (the browser's display list) have to rebuild it here,
     // because paint happens with the clip already set and is too late to
     // reflow.
-    WM_EV_RESIZE
+    WM_EV_RESIZE,
+
+    // A new video frame is waiting, and nothing else on screen changed. The
+    // topmost window repaints just its video area -- with the back buffer
+    // already selected -- and reports it with wm_region_painted. A window
+    // with nothing to repaint ignores the event, and the frame falls back to
+    // a full recomposite. See wm_invalidate_video.
+    WM_EV_VIDEO,
+
+    // The scroll wheel turned over a window that asked for it with
+    // wm_set_wheel: ev.key is the number of notches, positive downwards.
+    // Windows that did not ask still get the wheel as repeated Up/Down keys.
+    WM_EV_WHEEL,
+
+    // The user asked to close the window (its close button). The app may say
+    // no by setting win->keep_open -- to ask about unsaved work, say -- and
+    // close itself later with wm_close. Closing from anywhere else (the task
+    // manager, a crash) skips this and goes straight to WM_EV_CLOSE.
+    WM_EV_CLOSE_REQ
 };
 
 typedef struct {
@@ -63,12 +81,19 @@ struct wm_window {
     char         title[WM_TITLE_MAX];
     wm_handler_t handler;
     void*        user;                // per-app state, owned by the app
+    int          wants_wheel;         // deliver WM_EV_WHEEL instead of arrow keys
+    int          keep_open;           // set by a handler answering WM_EV_CLOSE_REQ
 };
 
 void          wm_init(void);
 wm_window_t*  wm_open(const char* title, int x, int y, int w, int h,
                       wm_handler_t handler, void* user);
 void          wm_close(wm_window_t* win);
+
+// What the close button does: offers the app a chance to refuse (WM_EV_CLOSE_REQ)
+// and closes the window if it did not.
+void          wm_request_close(wm_window_t* win);
+void          wm_set_wheel(wm_window_t* win, int on);
 void          wm_focus(wm_window_t* win);
 int           wm_is_focused(const wm_window_t* win);
 int           wm_window_count(void);
@@ -105,6 +130,15 @@ int  wm_focus_id(uint32_t id);
 // repaint, so an app that changes its own state must call this or the change
 // will not appear until the next mouse move.
 void wm_invalidate(void);
+
+// Marks only a video frame as new. The compositor then asks the topmost
+// window to repaint its video area and copies that rectangle to the screen,
+// instead of recompositing the whole desktop -- which, at 24 frames a second,
+// had been costing more than decoding the video. Anything that cannot be done
+// that way (the video's window is not on top, the area overlaps the menu bar
+// or dock) quietly becomes a full repaint.
+void wm_invalidate_video(void);
+void wm_region_painted(int x, int y, int w, int h);
 
 // Client area in screen coordinates — what an app should draw into.
 void wm_client_rect(const wm_window_t* win, int* x, int* y, int* w, int* h);

@@ -55,7 +55,7 @@ void paging_init(void){
     __asm__ __volatile__(
         "mov %0, %%cr3\n\t"
         "mov %%cr0, %%eax\n\t"
-        "or  $0x80000000, %%eax\n\t"
+        "or  $0x80010000, %%eax\n\t"      // PG + WP: the kernel honours read-only user pages
         "mov %%eax, %%cr0\n\t"
         :: "r"(page_directory)
         : "eax", "memory"
@@ -87,6 +87,17 @@ uint32_t paging_new_address_space(void){
     return (uint32_t)pd;
 }
 
+// Whether entry `i` of directory `pd` names the kernel's own page table. The
+// comparison is on the table's address, not the whole entry: the CPU sets the
+// Accessed bit in whichever directory it walks, so the kernel's entry and a
+// space's copy of it drift apart the first time only one of them is used. An
+// exact compare then mistook a shared kernel table for the space's own and
+// freed it on teardown.
+static int shares_kernel_table(const uint32_t* pd, uint32_t i){
+    return (pd[i] & PAGE_PRESENT) && (page_directory[i] & PAGE_PRESENT)
+        && (pd[i] & 0xFFFFF000u) == (page_directory[i] & 0xFFFFF000u);
+}
+
 // Releases a directory and the page tables it alone created. Entries shared
 // with the kernel are left alone: they belong to every other address space
 // too, and freeing them here would unmap the kernel from under itself.
@@ -96,7 +107,7 @@ void paging_free_address_space(uint32_t pd_phys){
 
     for (int i = 0; i < PD_ENTRIES; i++){
         if (!(pd[i] & PAGE_PRESENT)) continue;
-        if (pd[i] == page_directory[i]) continue;      // shared with the kernel
+        if (shares_kernel_table(pd, i)) continue;      // shared with the kernel
         pmm_free_frame((void*)(pd[i] & 0xFFFFF000u));
     }
     pmm_free_frame((void*)pd_phys);
@@ -109,7 +120,7 @@ static uint32_t* table_in(uint32_t pd_phys, uint32_t pd_index, int create){
         // A table inherited from the kernel must not be written through: it is
         // shared with every other address space, so adding a user page to it
         // would add that page to all of them. Copy it first.
-        if (pd[pd_index] == page_directory[pd_index] && create){
+        if (shares_kernel_table(pd, pd_index) && create){
             uint32_t* fresh = (uint32_t*)pmm_alloc_frame();
             if (!fresh) return 0;
             const uint32_t* old = (const uint32_t*)(pd[pd_index] & 0xFFFFF000u);
@@ -145,4 +156,32 @@ uint32_t paging_phys_of(uint32_t pd, uint32_t virt){
     uint32_t e = table[(virt >> 12) & 0x3FFu];
     if (!(e & PAGE_PRESENT)) return 0;
     return e & 0xFFFFF000u;
+}
+
+// The page-table entry for `virt` in `pd`, or 0 if its table does not exist
+// (and `create` is 0, or a table could not be allocated). The caller edits the
+// entry in place, which is what lets the VM layer set and clear COW marks
+// without a second lookup.
+uint32_t* paging_pte(uint32_t pd, uint32_t virt, int create){
+    uint32_t* table = table_in(pd, virt >> 22, create);
+    if (!table) return 0;
+    return &table[(virt >> 12) & 0x3FFu];
+}
+
+void paging_flush_page(uint32_t virt){
+    __asm__ __volatile__("invlpg (%0)" :: "r"(virt) : "memory");
+}
+
+// Reloads CR3 only if `pd` is the directory in force; a space that is not
+// loaded has no TLB entries to lose.
+void paging_flush_if_active(uint32_t pd){
+    uint32_t cr3;
+    __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
+    if ((cr3 & 0xFFFFF000u) == pd) __asm__ __volatile__("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+uint32_t paging_current_dir(void){
+    uint32_t cr3;
+    __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
+    return cr3 & 0xFFFFF000u;
 }

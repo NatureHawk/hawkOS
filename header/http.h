@@ -43,3 +43,22 @@ typedef void (*http_progress_t)(void* ctx, const char* stage);
 // run it on a task of its own if a UI needs to stay responsive.
 int  http_get(const char* url, http_response_t* out, http_progress_t cb, void* ctx);
 void http_response_free(http_response_t* r);
+
+// Streaming. For a body too long to hold, or one the caller wants to start on
+// before it has all arrived. http_open follows redirects and reads the
+// headers; http_read then returns >0 bytes, 0 for "nothing yet, try again",
+// or -1 at the end of the body. Chunked transfer coding is undone on the way.
+typedef struct http_stream http_stream_t;
+
+http_stream_t* http_open(const char* url, http_progress_t cb, void* ctx,
+                         char* err, uint32_t errcap);
+int            http_status(const http_stream_t* s);
+const char*    http_content_type(const http_stream_t* s);
+int32_t        http_content_length(const http_stream_t* s);   // -1 if unknown
+// Copies the value of response header `name` (case-insensitive). 0 if present.
+int            http_header(const http_stream_t* s, const char* name, char* out, uint32_t cap);
+int            http_read(http_stream_t* s, uint8_t* buf, uint32_t cap);
+// Blocks until the stream has bytes to read (or has ended), or timeout_ms
+// passes. Use it instead of sleeping when http_read returned 0.
+void           http_wait(http_stream_t* s, uint32_t timeout_ms);
+void           http_close(http_stream_t* s);

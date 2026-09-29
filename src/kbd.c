@@ -15,20 +15,37 @@ static volatile int caps_on  = 0;
 static volatile int ctrl_on  = 0;
 static volatile int e0_seen  = 0;
 
+// Each queued key carries the state of Ctrl and Shift at the moment it was
+// pressed, in bits above the key code. The queue is read on the window
+// manager's schedule, not the keyboard's, so by the time Ctrl+C is taken off it
+// the fingers may be long gone; asking "is Ctrl down?" then would see a plain
+// "c" and type it. Recording the modifiers with the key is what makes a
+// shortcut a shortcut however quickly it was struck.
+#define MOD_CTRL  0x10000
+#define MOD_SHIFT 0x20000
+
+static int in_key = 0, key_ctrl = 0, key_shift = 0;
+
 static inline void push(int c){
     int n = (head + 1) % KBD_BUF_SIZE;
-    if (n != tail) { buf[head] = c; head = n; }
+    int m = (ctrl_on ? MOD_CTRL : 0) | (shift_on ? MOD_SHIFT : 0);
+    if (n != tail) { buf[head] = c | m; head = n; }
 }
 
 int kbd_getc(void){
-    if (tail == head) return -1;
+    if (tail == head){ in_key = 0; return -1; }
     int c = buf[tail];
     tail = (tail + 1) % KBD_BUF_SIZE;
-    return c;
+    in_key = 1;
+    key_ctrl  = (c & MOD_CTRL)  != 0;
+    key_shift = (c & MOD_SHIFT) != 0;
+    return c & 0xFFFF;
 }
 
-int kbd_ctrl_down(void){ return ctrl_on; }
-int kbd_shift_down(void){ return shift_on; }
+// While a key taken from the queue is being handled these report the state it
+// was pressed with; otherwise (a mouse click with Ctrl held) the live state.
+int kbd_ctrl_down(void){ return in_key ? key_ctrl : ctrl_on; }
+int kbd_shift_down(void){ return in_key ? key_shift : shift_on; }
 
 void kbd_init(void){ }
 
@@ -94,6 +111,7 @@ static void handle_scancode(uint8_t sc){
     if (sc == 0x1D){ ctrl_on = 1; return; }
     if (sc == 0x3A){ caps_on ^= 1; return; }
     if (sc == 0x3B){ push(KEY_F1); return; }
+    if (sc == 0x3C){ push(KEY_F2); return; }
 
     // The keypad arrows send these without an 0xE0 prefix when Num Lock is
     // off, which is how QEMU's default keymap delivers them.

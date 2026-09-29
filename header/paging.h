@@ -4,6 +4,7 @@
 #define PAGE_PRESENT 0x1u
 #define PAGE_RW      0x2u
 #define PAGE_USER    0x4u
+#define PAGE_COW     0x200u   // software bit (PTE bit 9): shared copy-on-write page
 
 // Sets up a page directory, identity-maps all physical RAM the PMM knows
 // about, and turns paging on. Must run after pmm_init().
@@ -36,3 +37,11 @@ uint32_t paging_phys_of(uint32_t pd, uint32_t virt);
 // Loads CR3. Cheap, but not free: it flushes the TLB, so the scheduler only
 // calls it when the address space actually changes.
 void     paging_switch(uint32_t pd);
+
+// The entry for `virt` in `pd`, for in-place edits; 0 if there is no page
+// table for it and `create` is 0 (or the table could not be allocated).
+uint32_t* paging_pte(uint32_t pd, uint32_t virt, int create);
+
+void     paging_flush_page(uint32_t virt);          // invlpg
+void     paging_flush_if_active(uint32_t pd);       // reload CR3 iff pd is loaded
+uint32_t paging_current_dir(void);                  // CR3

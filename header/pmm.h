@@ -9,7 +9,16 @@ void pmm_init(uint32_t multiboot_magic, uint32_t multiboot_info_addr);
 // Returns the physical address of a free 4KB frame, zero-filled bookkeeping
 // only (contents are NOT cleared). Returns NULL if out of memory.
 void* pmm_alloc_frame(void);
+// Frees drop one reference: a frame shared copy-on-write returns to the pool
+// only when its last sharer releases it. A fresh frame has one reference.
 void  pmm_free_frame(void* frame_phys);
+int   pmm_ref_frame(void* frame_phys);         // +1 sharer; -1 if not allocated or saturated
+uint32_t pmm_frame_refs(void* frame_phys);
+
+// n physically contiguous frames (one reference each), or NULL. For big
+// buffers the kernel heap would otherwise carve out of its free list.
+void* pmm_alloc_contig(uint32_t n);
+void  pmm_free_contig(void* phys, uint32_t n);
 
 uint32_t pmm_total_frames(void);   // static bitmap capacity (tracking limit)
 uint32_t pmm_free_frames(void);

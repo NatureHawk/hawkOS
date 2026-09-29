@@ -61,6 +61,7 @@ OBJS = \
   $(SRCDIR)/ata.o\
   $(SRCDIR)/fat32.o\
   $(SRCDIR)/task.o\
+  $(SRCDIR)/fpu.o\
   $(SRCDIR)/switch.o\
   $(SRCDIR)/font8x16.o\
   $(SRCDIR)/fontprop.o\
@@ -68,6 +69,12 @@ OBJS = \
   $(SRCDIR)/wm.o\
   $(SRCDIR)/app_taskman.o\
   $(SRCDIR)/app_files.o\
+  $(SRCDIR)/app_edit.o\
+  $(SRCDIR)/app_settings.o\
+  $(SRCDIR)/clipboard.o\
+  $(SRCDIR)/lineedit.o\
+  $(SRCDIR)/settings.o\
+  $(SRCDIR)/fsutil.o\
   $(SRCDIR)/app_term.o\
   $(SRCDIR)/app_about.o\
   $(SRCDIR)/app_browser.o\
@@ -83,6 +90,11 @@ OBJS = \
   $(SRCDIR)/css.o\
   $(SRCDIR)/test_css.o\
   $(SRCDIR)/vmmouse.o\
+  $(SRCDIR)/ac97.o\
+  $(SRCDIR)/video.o\
+  $(SRCDIR)/image.o\
+  $(SRCDIR)/lib_plmpeg.o\
+  $(SRCDIR)/lib_stbimage.o\
   $(SRCDIR)/ktest.o\
   $(SRCDIR)/test_kstring.o\
   $(SRCDIR)/test_mem.o\
@@ -91,35 +103,57 @@ OBJS = \
   $(SRCDIR)/syscall_asm.o\
   $(SRCDIR)/syscall.o\
   $(SRCDIR)/proc.o\
+  $(SRCDIR)/vfs.o\
+  $(SRCDIR)/pipe.o\
+  $(SRCDIR)/signal.o\
   $(SRCDIR)/test_fat32.o\
-  $(SRCDIR)/test_proc.o
+  $(SRCDIR)/test_vfs.o\
+  $(SRCDIR)/test_media.o\
+  $(SRCDIR)/test_proc.o\
+  $(SRCDIR)/sync.o\
+  $(SRCDIR)/test_sync.o\
+  $(SRCDIR)/acpi.o\
+  $(SRCDIR)/apic.o\
+  $(SRCDIR)/test_hw.o\
+  $(SRCDIR)/test_user.o\
+  $(SRCDIR)/test_integ.o\
+  $(SRCDIR)/vm.o\
+  $(SRCDIR)/test_vm.o\
+  $(SRCDIR)/test_fsutil.o
 
 all: $(OUTISO) user
 iso: $(OUTISO)
 
 # ---------------------------------------------------------------- userland
 #
-# User programs are flat binaries linked at PROC_BASE, built with the same
-# compiler but nothing else in common with the kernel: no kernel headers, no
-# libc, and -nostdlib so nothing is silently linked in. They reach the running
-# system only through int 0x80.
+# HELLO.BIN is a flat binary linked at PROC_BASE (user.ld), kept to exercise
+# the loader's fallback path and the privilege boundary. Everything else is an
+# ELF32 executable (elf.ld) built against user/hawk.h, with no kernel headers,
+# no libc, and -nostdlib so nothing is silently linked in. They reach the
+# running system only through int 0x80.
 USERDIR  = user
 USERBINS = $(USERDIR)/hello.bin
+USERELFS = $(USERDIR)/hi.elf $(USERDIR)/cat.elf $(USERDIR)/ls.elf $(USERDIR)/utest.elf $(USERDIR)/wc.elf $(USERDIR)/fsdemo.elf
 USERCFLAGS = -m32 -ffreestanding -fno-pic -fno-stack-protector -O2 -Wall -Wextra -std=gnu11
 
-$(USERDIR)/%.bin: $(USERDIR)/%.c $(USERDIR)/user.ld
+$(USERDIR)/%.bin: $(USERDIR)/%.c $(USERDIR)/user.ld $(USERDIR)/hawk.h
 	$(CC) $(USERCFLAGS) -c $< -o $(USERDIR)/$*.o
 	$(LD) -m elf_i386 -T $(USERDIR)/user.ld -nostdlib --oformat binary -o $@ $(USERDIR)/$*.o
 
-user: $(USERBINS)
+$(USERDIR)/%.elf: $(USERDIR)/%.c $(USERDIR)/elf.ld $(USERDIR)/hawk.h
+	$(CC) $(USERCFLAGS) -c $< -o $(USERDIR)/$*.o
+	$(LD) -m elf_i386 -T $(USERDIR)/elf.ld -nostdlib -z max-page-size=0x1000 -z noexecstack \
+	  --no-warn-rwx-segments -s -o $@ $(USERDIR)/$*.o
+
+user: $(USERBINS) $(USERELFS)
 
 # Copies the built user programs onto the FAT32 image so proc_spawn can find
-# them. mcopy comes from mtools and writes into the image without needing root
-# or a loop mount.
-disk-sync: $(USERBINS) $(DISKIMG)
-	@for b in $(USERBINS); do \
-	  n=$$(basename $$b .bin | tr 'a-z' 'A-Z'); \
-	  mcopy -i $(DISKIMG) -o $$b ::$$n.BIN && echo "copied $$b -> $$n.BIN"; \
+# them (HELLO.BIN, HI.ELF, ...). mcopy comes from mtools and writes into the
+# image without needing root or a loop mount.
+disk-sync: $(USERBINS) $(USERELFS) $(DISKIMG)
+	@for b in $(USERBINS) $(USERELFS); do \
+	  n=$$(basename $$b | tr 'a-z' 'A-Z'); \
+	  mcopy -i $(DISKIMG) -o $$b ::$$n && echo "copied $$b -> $$n"; \
 	done
 
 # kernel ELF/bin
@@ -153,13 +187,37 @@ NETDEV = -netdev user,id=n0 -device rtl8139,netdev=n0
 # -boot d: force booting from the CD-ROM. Without it, QEMU's default BIOS
 # boot order tries the hard disk (disk.img) first — which holds a plain FAT32
 # filesystem, not a bootable one — and never reaches the actual ISO.
+# Sound: an AC'97 codec, played through the host's PulseAudio -- which WSLg
+# provides, so this works unchanged under WSL. `make run AUDIO=` leaves the
+# sound card out; the video player then plays silently.
+AUDIO ?= -audiodev pa,id=snd0 -device AC97,audiodev=snd0
+
+# Hardware virtualisation when this user may use it, software emulation when
+# not: QEMU tries each -accel in turn. KVM runs the guest at native speed --
+# the difference between a video decoder with headroom and one at its limit.
+# Under WSL, access needs membership of the kvm group:
+#   sudo usermod -aG kvm $USER     (then `wsl --shutdown` and reopen)
+ACCEL ?= -accel kvm -accel tcg
+
 run: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) -serial stdio
+	qemu-system-i386 $(ACCEL) -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) $(AUDIO) -serial stdio
+
+# YouTube. The browser reaches YouTube through tools/ytgate.py running on this
+# machine (10.0.2.2 from inside the guest): it needs yt-dlp and ffmpeg on
+# PATH, or in ~/.local/bin. This starts the gateway, boots the machine, and
+# stops the gateway again when QEMU exits. Gateway output goes to ytgate.log.
+youtube: $(OUTISO) $(DISKIMG)
+	@python3 tools/ytgate.py > ytgate.log 2>&1 & gw=$$!; \
+	trap "kill $$gw 2>/dev/null" EXIT INT TERM; \
+	sleep 1; \
+	if ! kill -0 $$gw 2>/dev/null; then cat ytgate.log; exit 1; fi; \
+	echo "ytgate running (log: ytgate.log) - in the browser, open youtube.com"; \
+	qemu-system-i386 $(ACCEL) -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) $(AUDIO) -serial file:serial.log
 
 # Same machine with the NIC left out, for testing that the system comes up
 # and stays usable when there is no network at all.
 run-offline: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d -serial stdio
+	qemu-system-i386 $(ACCEL) -m 128M -cdrom $(OUTISO) $(DISK) -boot d -serial stdio
 
 # Boots the kernel straight from QEMU's multiboot loader with "selftest" on
 # the command line, runs the in-kernel test suite, and exits. There is no
@@ -179,13 +237,13 @@ test: $(OUTBIN) $(DISKIMG) disk-sync
 	else echo "--- self-test did not report (qemu exit $$code)"; exit 1; fi
 
 run-bin: $(OUTBIN) $(DISKIMG)
-	qemu-system-i386 -m 128M -kernel $(OUTBIN) $(DISK) $(NETDEV) -serial stdio
+	qemu-system-i386 $(ACCEL) -m 128M -kernel $(OUTBIN) $(DISK) $(NETDEV) -serial stdio
 
 # -serial stdio doesn't reliably reach the terminal under some WSL/terminal
 # setups. This logs the same kprintf output to a file instead — open
 # serial.log in any editor after quitting QEMU.
 run-log: $(OUTISO) $(DISKIMG)
-	qemu-system-i386 -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) -serial file:serial.log
+	qemu-system-i386 $(ACCEL) -m 128M -cdrom $(OUTISO) $(DISK) -boot d $(NETDEV) $(AUDIO) -serial file:serial.log
 
 # Every object depends on every header.
 #
@@ -236,12 +294,22 @@ $(SRCDIR)/isr.o: $(SRCDIR)/isr.asm
 $(SRCDIR)/%.o: $(SRCDIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# The vendored media decoders (pl_mpeg, stb_image) are compiled as upstream
+# wrote them. Their warnings under -Wextra are upstream's business, and a
+# screenful of them would bury the kernel's own.
+$(SRCDIR)/lib_%.o: $(SRCDIR)/lib_%.c $(HEADERS) $(wildcard third_party/pl_mpeg/*.h third_party/stb/*.h)
+	$(CC) $(CFLAGS) $(LIBOPT) -w -c $< -o $@
+
+# The video decoder is the hottest code in the system while a video plays,
+# and under emulation every instruction saved is saved many times over.
+LIBOPT = -O3 -msse2 -mfpmath=sse -mincoming-stack-boundary=2
+
 clean:
 	rm -f $(SRCDIR)/*.o $(OUTBIN) $(OUTISO) serial.log
-	rm -f $(USERDIR)/*.o $(USERDIR)/*.bin
+	rm -f $(USERDIR)/*.o $(USERDIR)/*.bin $(USERDIR)/*.elf
 	rm -rf iso
 
-.PHONY: all iso run run-offline run-bin run-log test clean bearssl user disk-sync
+.PHONY: all iso run run-offline run-bin run-log youtube test clean bearssl user disk-sync
 
 bearssl:
 	sh tools/build_bearssl.sh

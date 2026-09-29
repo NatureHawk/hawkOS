@@ -18,6 +18,10 @@ The optional script file holds one directive per line:
     click <x> <y>            move there, then press+release the left button
     drag <x0> <y0> <x1> <y1> press at the first point, travel, release at the second
     wheel <n>                scroll n notches; positive is down
+    dclick <x> <y> [n]       n quick clicks in a row (default 2): double- and triple-click
+    chord <mod+mod+key>      a key with modifiers held, e.g. `chord ctrl+shift+n`
+    hold <qcode>             press a key and leave it down (`hold shift`)
+    release <qcode>          let a held key up again
     shot <file.png>          capture right now
 """
 
@@ -160,6 +164,36 @@ class Qmp:
             events=[{"type": "key",
                      "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}],
         )
+
+    def multiclick(self, x, y, n):
+        # The plain click() waits most of a second between press and release,
+        # which is longer than any double-click interval; this one moves once
+        # and then presses n times in quick succession.
+        self.move(x, y)
+        time.sleep(0.35)
+        for _ in range(n):
+            self.cmd("input-send-event",
+                     events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
+            time.sleep(0.03)
+            self.cmd("input-send-event",
+                     events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
+            time.sleep(0.05)
+        time.sleep(0.35)
+
+    def chord(self, spec):
+        # Modifiers go down first and come up last, in reverse, the way fingers
+        # do it -- a guest that sees Ctrl arrive after the letter would treat
+        # the letter as plain typing.
+        *mods, key = spec.split("+")
+        def ev(down, q):
+            return {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": q}}}
+        evs = [ev(True, m) for m in mods] + [ev(True, key), ev(False, key)]
+        evs += [ev(False, m) for m in reversed(mods)]
+        self.cmd("input-send-event", events=evs)
+
+    def hold(self, qcode, down=True):
+        self.cmd("input-send-event", events=[
+            {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}])
 
     def rel(self, dx, dy):
         # The guest has a PS/2 mouse driver, so it only ever sees relative
@@ -381,6 +415,17 @@ def main():
                     qmp.drag(int(x0), int(y0), int(x1), int(y1))
                 elif op == "wheel":
                     qmp.wheel(int(rest))
+                elif op == "dclick":
+                    parts = rest.split()
+                    qmp.multiclick(int(parts[0]), int(parts[1]),
+                                   int(parts[2]) if len(parts) > 2 else 2)
+                elif op == "chord":
+                    qmp.chord(rest)
+                    time.sleep(0.15)
+                elif op == "hold":
+                    qmp.hold(rest, True)
+                elif op == "release":
+                    qmp.hold(rest, False)
                 elif op == "shot":
                     shot(rest)
                 else:

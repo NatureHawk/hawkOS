@@ -16,6 +16,7 @@
 // it.
 #include <stdint.h>
 #include "header/wm.h"
+#include "header/kheap.h"
 #include "header/theme.h"
 #include "header/gfx.h"
 #include "header/mouse.h"
@@ -67,13 +68,21 @@ static int snap_hint = 0;
 static unsigned long long click_when = 0;
 static int click_where_x = 0, click_where_y = 0, click_which = -1;
 
-// The three window buttons, at the left of the title bar. Their size and
+// The window that took the last button press in its client area. While the
+// button stays down it keeps receiving pointer motion -- wherever the pointer
+// has gone -- and the release, so a text selection or a scrollbar drag that
+// wanders outside its window neither stops nor lands on whatever is beneath.
+static int press_win = -1;
+
+// The three window buttons, at the right end of the title bar, minimise then
+// zoom then close with close outermost -- the order a hand learns on the
+// machines where the corner is where a window is dismissed. Their size and
 // spacing is the whole reason they read as a set rather than as three
 // unrelated dots: 12 across with 8 between is tight enough to group and wide
 // enough that a mouse can pick one out.
-#define LIGHT_D   12
-#define LIGHT_GAP 8
-#define LIGHT_X0  14
+#define LIGHT_D    12
+#define LIGHT_GAP  8
+#define LIGHT_PAD  14      // from the right edge of the window to the close button
 
 #define GRIP        5      // thickness of the resize border, in pixels
 #define SNAP_EDGE   10     // how close to a screen edge a drag starts snapping
@@ -89,6 +98,21 @@ static int idx_of(const wm_window_t* w){
 }
 
 void wm_invalidate(void){ dirty = 1; }
+
+static volatile int video_dirty = 0;
+void wm_invalidate_video(void){ video_dirty = 1; }
+
+// Rectangles repainted by the current WM_EV_VIDEO, in screen coordinates.
+#define REGION_MAX 4
+static int region_n = 0;
+static int region[REGION_MAX][4];
+
+void wm_region_painted(int x, int y, int w, int h){
+    if (region_n >= REGION_MAX || w <= 0 || h <= 0) return;
+    region[region_n][0] = x; region[region_n][1] = y;
+    region[region_n][2] = w; region[region_n][3] = h;
+    region_n++;
+}
 
 void wm_work_area(int* x, int* y, int* w, int* h){
     if (x) *x = 0;
@@ -120,6 +144,7 @@ void wm_init(void){
     focused = -1;
     drag_win = -1;
     resize_win = -1;
+    press_win = -1;
     snap_hint = 0;
     dirty = 1;
 }
@@ -270,6 +295,8 @@ wm_window_t* wm_open(const char* title, int x, int y, int w, int h,
     win->rx = x; win->ry = y; win->rw = w; win->rh = h;
     win->handler   = handler;
     win->user      = user;
+    win->wants_wheel = 0;
+    win->keep_open   = 0;
     strncpy(win->title, title ? title : "", WM_TITLE_MAX - 1);
     win->title[WM_TITLE_MAX - 1] = 0;
 
@@ -293,7 +320,21 @@ void wm_close(wm_window_t* win){
     if (focused == i) focused = order_n ? order[order_n - 1] : -1;
     if (drag_win == i) drag_win = -1;
     if (resize_win == i) resize_win = -1;
+    if (press_win == i) press_win = -1;
     dirty = 1;
+}
+
+void wm_request_close(wm_window_t* win){
+    int i = idx_of(win);
+    if (i < 0) return;
+    win->keep_open = 0;
+    if (win->handler){ wm_event_t ev = { WM_EV_CLOSE_REQ, 0, 0, 0 }; win->handler(win, &ev); }
+    // The handler may have closed the window itself; only act if it is still ours.
+    if (idx_of(win) == i && !win->keep_open) wm_close(win);
+}
+
+void wm_set_wheel(wm_window_t* win, int on){
+    if (idx_of(win) >= 0) win->wants_wheel = on ? 1 : 0;
 }
 
 void wm_focus(wm_window_t* win){
@@ -358,12 +399,12 @@ void wm_quit(void){ running = 0; }
 
 // ------------------------------------------------------------------ paint
 
-// Close, minimise, zoom -- left to right, at the left end of the title bar.
+// Minimise, zoom, close -- left to right, at the right end of the title bar.
 static void title_buttons(const wm_window_t* win, int* close_x, int* min_x, int* max_x){
-    int c = win->x + LIGHT_X0;
+    int c = win->x + win->w - LIGHT_PAD - LIGHT_D;
     if (close_x) *close_x = c;
-    if (min_x)   *min_x   = c + LIGHT_D + LIGHT_GAP;
-    if (max_x)   *max_x   = c + 2 * (LIGHT_D + LIGHT_GAP);
+    if (max_x)   *max_x   = c - (LIGHT_D + LIGHT_GAP);
+    if (min_x)   *min_x   = c - 2 * (LIGHT_D + LIGHT_GAP);
 }
 
 // The glyph inside a window button. Only drawn on the focused window, the
@@ -446,6 +487,7 @@ static void paint_frame(int idx, uint32_t desk_bg){
 
     int bclose, bmin, bmax;
     title_buttons(win, &bclose, &bmin, &bmax);
+    // Indexed close, minimise, zoom to match light_glyph and the palette.
     int lights[3] = { bclose, bmin, bmax };
     uint32_t lcol[3] = { TH_LIGHT_CLOSE, TH_LIGHT_MIN, TH_LIGHT_MAX };
     int cy = win->y + WM_TITLE_H / 2;
@@ -455,16 +497,13 @@ static void paint_frame(int idx, uint32_t desk_bg){
         if (on) light_glyph(cx, cy, i, GFX_RGB(0x5A, 0x28, 0x10));
     }
 
-    // The title is centred on the window, not on the space left over beside
-    // the buttons, and pushed right only if it would otherwise collide.
-    int tw   = (int)gfx_text_width(win->title);
-    int left = bmax + LIGHT_D + 14;
-    int tx   = win->x + (win->w - tw) / 2;
-    if (tx < left) tx = left;
-    int avail = win->x + win->w - left - 12;
+    // The title starts at the left edge and is clipped short of the buttons,
+    // which now sit at the other end of the bar.
+    int left  = win->x + 14;
+    int avail = bmin - 12 - left;
     if (avail > 0){
         gfx_clip_set((uint32_t)left, (uint32_t)win->y, (uint32_t)avail, WM_TITLE_H);
-        gfx_text((uint32_t)tx, (uint32_t)(win->y + (WM_TITLE_H - 16) / 2), win->title,
+        gfx_text((uint32_t)left, (uint32_t)(win->y + (WM_TITLE_H - 16) / 2), win->title,
                  on ? TH_TITLE_TEXT_ON : TH_TITLE_TEXT_OFF, GFX_TRANSPARENT);
         gfx_clip_reset();
     }
@@ -558,6 +597,42 @@ static void compose(int mx, int my){
     paint_chrome();
     if (overlay_paint) overlay_paint();
     paint_cursor(mx, my);
+}
+
+// The partial repaint behind wm_invalidate_video. Returns 0 when the frame
+// has to go through a full compose instead.
+static int compose_video(int mx, int my){
+    if (drag_win >= 0 || resize_win >= 0 || snap_hint || order_n == 0) return 0;
+    int top = order[order_n - 1];
+    wm_window_t* w = &windows[top];
+    if (!w->used || w->minimized || !w->handler) return 0;
+
+    region_n = 0;
+    gfx_use_backbuffer(1);
+    wm_event_t ev = { WM_EV_VIDEO, 0, 0, 0 };
+    w->handler(w, &ev);
+    gfx_clip_reset();
+
+    if (region_n == 0){ gfx_use_backbuffer(0); return 0; }
+
+    // The menu bar and dock are drawn over windows, translucently; a region
+    // under either would need them re-blended, so that case recomposites.
+    int H = (int)gfx_height();
+    for (int i = 0; i < region_n; i++)
+        if (region[i][1] < WM_MENUBAR_H || region[i][1] + region[i][3] > H - WM_DOCK_H){
+            gfx_use_backbuffer(0);
+            return 0;
+        }
+
+    // What is drawn above windows goes back on top: an open menu, then the
+    // pointer. Both are no-ops or a few hundred pixels when nothing overlaps.
+    if (overlay_paint) overlay_paint();
+    paint_cursor(mx, my);
+    for (int i = 0; i < region_n; i++)
+        gfx_present_rect((uint32_t)region[i][0], (uint32_t)region[i][1],
+                         (uint32_t)region[i][2], (uint32_t)region[i][3]);
+    gfx_use_backbuffer(0);
+    return 1;
 }
 
 // ------------------------------------------------------------------ input
@@ -658,7 +733,7 @@ static void on_press(int mx, int my){
     int by = w->y + (WM_TITLE_H - LIGHT_D) / 2;
 
     if (my >= by && my < by + LIGHT_D){
-        if (mx >= bclose && mx < bclose + LIGHT_D){ wm_close(w); return; }
+        if (mx >= bclose && mx < bclose + LIGHT_D){ wm_request_close(w); return; }
         if (mx >= bmin && mx < bmin + LIGHT_D){ wm_minimize(w, 1); return; }
         if (mx >= bmax && mx < bmax + LIGHT_D){ wm_maximize(w, !w->maximized); return; }
     }
@@ -694,6 +769,7 @@ static void on_press(int mx, int my){
         return;
     }
 
+    press_win = idx;
     send(idx, WM_EV_MOUSE_DOWN, mx, my, 0);
     dirty = 1;
 }
@@ -707,8 +783,13 @@ static void on_release(int mx, int my){
         if (snap_hint){ snap_apply(idx, snap_hint); snap_hint = 0; dirty = 1; }
         return;
     }
-    int idx = hit_test(mx, my);
-    if (idx >= 0) send(idx, WM_EV_MOUSE_UP, mx, my, 0);
+    // The release goes to the window that took the press, not to whatever is
+    // under the pointer now.
+    if (press_win >= 0){
+        int idx = press_win;
+        press_win = -1;
+        if (windows[idx].used) send(idx, WM_EV_MOUSE_UP, mx, my, 0);
+    }
 }
 
 // Cycles focus through the open windows, topmost-last, so repeated presses
@@ -751,6 +832,7 @@ void wm_run(void){
     int prev_btn = 0;
     int prev_mx  = mouse_x(), prev_my = mouse_y();
     unsigned long long last_tick = ticks;
+    uint32_t beat = 0;
 
     while (running){
         int mx = mouse_x(), my = mouse_y();
@@ -773,8 +855,8 @@ void wm_run(void){
                 else if (mx >= aw - 1 - SNAP_EDGE)  snap_hint = SNAP_RIGHT;
                 else                                snap_hint = SNAP_NONE;
             } else {
-                int idx = hit_test(mx, my);
-                if (idx >= 0 && btn) send(idx, WM_EV_MOUSE_MOVE, mx, my, 0);
+                if (press_win >= 0 && btn && windows[press_win].used)
+                    send(press_win, WM_EV_MOUSE_MOVE, mx, my, 0);
             }
             prev_mx = mx; prev_my = my;
             dirty = 1;
@@ -792,10 +874,15 @@ void wm_run(void){
         // this makes the wheel work everywhere without touching any of them.
         int wheel = mouse_wheel_take();
         if (wheel && focused >= 0 && windows[focused].used){
-            int steps = wheel < 0 ? -wheel : wheel;
-            if (steps > 8) steps = 8;
-            for (int s = 0; s < steps * 3; s++)
-                send(focused, WM_EV_KEY, 0, 0, wheel > 0 ? KEY_DOWN : KEY_UP);
+            if (windows[focused].wants_wheel){
+                windows[focused].handler(&windows[focused],
+                    &(wm_event_t){ WM_EV_WHEEL, 0, 0, wheel });
+            } else {
+                int steps = wheel < 0 ? -wheel : wheel;
+                if (steps > 8) steps = 8;
+                for (int s = 0; s < steps * 3; s++)
+                    send(focused, WM_EV_KEY, 0, 0, wheel > 0 ? KEY_DOWN : KEY_UP);
+            }
             dirty = 1;
         }
 
@@ -826,8 +913,13 @@ void wm_run(void){
             dirty = 1;
         }
 
-        // A 4 Hz heartbeat drives the taskbar clock and anything that shows
-        // live values (the task manager, a download in progress).
+        // A 4 Hz heartbeat drives anything that shows live values (the task
+        // manager, a download in progress). Apps that changed something call
+        // wm_invalidate themselves; the unconditional full repaint -- the
+        // menu-bar clock, and apps that rely on being repainted -- is once a
+        // second. At four a second it was a whole-desktop recomposite every
+        // 250 ms on top of each video frame, a fifth of the CPU a 480p
+        // stream had to work with.
         if (ticks - last_tick >= 25){
             last_tick = ticks;
             for (int i = 0; i < WM_MAX_WINDOWS; i++)
@@ -835,10 +927,18 @@ void wm_run(void){
                     wm_event_t ev = { WM_EV_TICK, 0, 0, 0 };
                     windows[i].handler(&windows[i], &ev);
                 }
-            dirty = 1;
+            if (++beat % 4 == 0){
+                kheap_check();
+                dirty = 1;
+            }
         }
 
+        if (!dirty && video_dirty){
+            video_dirty = 0;
+            if (!compose_video(mx, my)) dirty = 1;
+        }
         if (dirty){
+            video_dirty = 0;
             gfx_use_backbuffer(1);
             compose(mx, my);
             gfx_present();

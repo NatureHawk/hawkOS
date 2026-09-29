@@ -49,6 +49,35 @@ int pci_find(uint16_t vendor_id, uint16_t device_id, pci_device_t* out){
     return -1;
 }
 
+int pci_find_class(uint8_t class_code, uint8_t subclass, pci_device_t* out){
+    for (uint16_t bus = 0; bus < 256; bus++){
+        for (uint8_t slot = 0; slot < 32; slot++){
+            for (uint8_t func = 0; func < 8; func++){
+                uint32_t id = pci_read32((uint8_t)bus, slot, func, 0x00);
+                if ((id & 0xFFFF) == 0xFFFF){
+                    if (func == 0) break;             // empty slot: skip its functions
+                    continue;
+                }
+                uint32_t cls = pci_read32((uint8_t)bus, slot, func, 0x08);
+                if ((uint8_t)(cls >> 24) == class_code && (uint8_t)(cls >> 16) == subclass){
+                    out->bus = (uint8_t)bus; out->slot = slot; out->func = func;
+                    out->vendor_id = (uint16_t)(id & 0xFFFF);
+                    out->device_id = (uint16_t)(id >> 16);
+                    out->class_code = class_code; out->subclass = subclass;
+                    out->prog_if = (uint8_t)(cls >> 8);
+                    for (int b = 0; b < 6; b++)
+                        out->bar[b] = pci_read32((uint8_t)bus, slot, func, (uint8_t)(0x10 + b * 4));
+                    out->irq_line = (uint8_t)(pci_read32((uint8_t)bus, slot, func, 0x3C) & 0xFF);
+                    return 0;
+                }
+                // Single-function device: do not probe functions 1..7.
+                if (func == 0 && !(pci_read32((uint8_t)bus, slot, 0, 0x0C) & 0x00800000u)) break;
+            }
+        }
+    }
+    return -1;
+}
+
 void pci_enable_bus_master(const pci_device_t* dev){
     uint32_t cmd = pci_read32(dev->bus, dev->slot, dev->func, 0x04);
     cmd |= (1u << 2) | (1u << 0);      // bus master + I/O space

@@ -5,6 +5,7 @@
 #include "header/proc.h"
 #include "header/task.h"
 #include "header/kprintf.h"
+#include "header/vm.h"
 
 extern void isr0(void);  extern void isr1(void);  extern void isr2(void);  extern void isr3(void);
 extern void isr4(void);  extern void isr5(void);  extern void isr6(void);  extern void isr7(void);
@@ -43,6 +44,17 @@ void exceptions_init(void){
 }
 
 void isr_handler_c(uint32_t n, uint32_t err, uint32_t cs){
+  // A page fault may just be a page that has not been given yet: demand-zero
+  // memory, a stack growing down, or a copy-on-write page being written. That
+  // holds in ring 0 too (a syscall copying into a user buffer), so try the
+  // address space in CR3 before deciding anything is wrong. On success the
+  // stub irets and the faulting instruction runs again.
+  if (n == 14){
+    uint32_t addr;
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(addr));
+    if (vm_page_fault(addr, err) == VM_FAULT_HANDLED) return;
+  }
+
   // A fault carrying a ring-3 code selector came from a user process. That is
   // not a system failure -- it is the privilege boundary doing its job -- so
   // the process dies and the machine carries on. Halting here instead would

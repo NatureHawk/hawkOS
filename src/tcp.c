@@ -12,6 +12,9 @@
 #include "header/kheap.h"
 #include "header/kstring.h"
 #include "header/kprintf.h"
+#include "header/irqctl.h"
+#include "header/sync.h"
+#include "header/task.h"
 
 extern volatile unsigned long long ticks;
 
@@ -60,10 +63,22 @@ struct tcp_conn {
     uint32_t pending_seq;
     unsigned long long resend_at;
     int      retries;
+
+    waitq_t  wq;            // woken on new data and on every state change
 };
 
 static struct tcp_conn conns[TCP_CONNS];
 static uint16_t next_port = 40000;
+static const char* open_error = "";
+
+// Concurrency. Connections are opened, read and freed by several tasks at
+// once -- the browser's page and image fetches, the video downloader -- while
+// the network task appends to the same receive buffers. With a preemptive
+// scheduler every one of those is a read-modify-write that can be interrupted
+// half done: two tasks claiming the same free slot, or a segment appended at
+// an offset a concurrent read is in the middle of moving. Each is guarded by
+// switching interrupts off, which on one CPU is what stops the timer from
+// scheduling anyone else in the middle.
 
 // ------------------------------------------------------------------ output
 
@@ -128,18 +143,49 @@ static void clear_retransmit(struct tcp_conn* c){
 
 // -------------------------------------------------------------------- API
 
+const char* tcp_open_error(void){ return open_error; }
+
 tcp_conn_t* tcp_open(ipv4_t dst, uint16_t dport){
-    if (!net_configured()) return 0;
+    if (!net_configured()){ open_error = "network is not configured"; return 0; }
 
+    // Claim the slot and mark it used in one step, so no other task can pick
+    // the same one between the search and the claim.
     struct tcp_conn* c = 0;
+    uint32_t f = irq_save();
     for (int i = 0; i < TCP_CONNS; i++) if (!conns[i].used){ c = &conns[i]; break; }
-    if (!c) return 0;
+    if (c){
+        memset(c, 0, sizeof(*c));
+        c->used  = 1;
+        c->state = TCP_CLOSED;          // not matched by tcp_input until SYN_SENT
+    }
+    irq_restore(f);
 
-    memset(c, 0, sizeof(*c));
-    c->rx = (uint8_t*)kmalloc(RX_CAP);
-    if (!c->rx) return 0;
+    if (!c){
+        open_error = "all connections are in use";
+        kprintf("[tcp] open refused: all %d connections in use\n", TCP_CONNS);
+        for (int i = 0; i < TCP_CONNS; i++){
+            char ip[16];
+            kprintf("[tcp]   %d: state %d peer %s:%u rx %u\n", i, conns[i].state,
+                    net_ip_str(conns[i].peer_ip, ip), conns[i].peer_port, conns[i].rx_len);
+        }
+        return 0;
+    }
 
-    c->used       = 1;
+    uint8_t* rx = (uint8_t*)kmalloc(RX_CAP);
+    if (!rx){
+        size_t used = 0, free_b = 0;
+        kheap_stats(&used, &free_b);
+        kprintf("[tcp] open refused: no memory for a receive buffer (heap %u KB used, %u KB free)\n",
+                (unsigned)(used / 1024u), (unsigned)(free_b / 1024u));
+        open_error = "out of memory for a connection";
+        f = irq_save();
+        c->used = 0;
+        irq_restore(f);
+        return 0;
+    }
+
+    f = irq_save();
+    c->rx         = rx;
     c->state      = TCP_SYN_SENT;
     c->peer_ip    = dst;
     c->peer_port  = dport;
@@ -152,6 +198,8 @@ tcp_conn_t* tcp_open(ipv4_t dst, uint16_t dport){
     c->snd_nxt = (uint32_t)(ticks * 2654435761u) | 1u;
     c->snd_una = c->snd_nxt;
     c->rcv_nxt = 0;
+
+    irq_restore(f);
 
     send_segment(c, SYN, 0, 0, c->snd_nxt);
     arm_retransmit(c, SYN, 0, 0, c->snd_nxt);
@@ -193,11 +241,33 @@ int tcp_read(tcp_conn_t* c, uint8_t* buf, uint32_t cap){
         return 0;
     }
 
+    uint32_t f = irq_save();
     uint32_t n = c->rx_len < cap ? c->rx_len : cap;
     memcpy(buf, c->rx, n);
     if (n < c->rx_len) memmove(c->rx, c->rx + n, c->rx_len - n);
     c->rx_len -= n;
+    irq_restore(f);
     return (int)n;
+}
+
+static int data_or_end(void* arg){
+    struct tcp_conn* c = (struct tcp_conn*)arg;
+    return !c->used || c->rx_len > 0 || c->state == TCP_CLOSE_WAIT || c->state == TCP_CLOSED;
+}
+
+static int left_syn_sent(void* arg){
+    struct tcp_conn* c = (struct tcp_conn*)arg;
+    return !c->used || c->state != TCP_SYN_SENT;
+}
+
+int tcp_wait_data(tcp_conn_t* c, uint32_t timeout_ms){
+    if (!c) return 0;
+    return waitq_wait_until(&c->wq, data_or_end, c, timeout_ms);
+}
+
+int tcp_wait_connect(tcp_conn_t* c, uint32_t timeout_ms){
+    if (!c) return 0;
+    return waitq_wait_until(&c->wq, left_syn_sent, c, timeout_ms);
 }
 
 void tcp_close(tcp_conn_t* c){
@@ -209,12 +279,17 @@ void tcp_close(tcp_conn_t* c){
     } else {
         c->state = TCP_CLOSED;
     }
+    waitq_wake_all(&c->wq);
 }
 
 void tcp_free(tcp_conn_t* c){
-    if (!c || !c->used) return;
-    if (c->rx) kfree(c->rx);
+    if (!c) return;
+    uint32_t f = irq_save();
+    if (!c->used){ irq_restore(f); return; }
+    uint8_t* rx = c->rx;
     memset(c, 0, sizeof(*c));
+    irq_restore(f);
+    if (rx) kfree(rx);
 }
 
 // ------------------------------------------------------------------- input
@@ -246,7 +321,7 @@ void tcp_input(ipv4_t src, ipv4_t dst, const uint8_t* seg, uint16_t len){
     const uint8_t* payload = seg + hlen;
     uint16_t plen = (uint16_t)(len - hlen);
 
-    if (flags & RST){ c->state = TCP_CLOSED; clear_retransmit(c); return; }
+    if (flags & RST){ c->state = TCP_CLOSED; clear_retransmit(c); waitq_wake_all(&c->wq); return; }
 
     if (c->state == TCP_SYN_SENT){
         if ((flags & (SYN | ACK)) == (SYN | ACK) && ackno == c->snd_nxt){
@@ -255,6 +330,7 @@ void tcp_input(ipv4_t src, ipv4_t dst, const uint8_t* seg, uint16_t len){
             c->state   = TCP_ESTABLISHED;
             clear_retransmit(c);
             send_segment(c, ACK, 0, 0, c->snd_nxt);
+            waitq_wake_all(&c->wq);
         }
         return;
     }
@@ -270,6 +346,7 @@ void tcp_input(ipv4_t src, ipv4_t dst, const uint8_t* seg, uint16_t len){
 
     if (plen){
         if (seq == c->rcv_nxt){
+            uint32_t f = irq_save();
             uint32_t room = RX_CAP - c->rx_len;
             uint32_t take = plen < room ? plen : room;
             if (take){
@@ -277,6 +354,7 @@ void tcp_input(ipv4_t src, ipv4_t dst, const uint8_t* seg, uint16_t len){
                 c->rx_len  += take;
                 c->rcv_nxt += take;
             }
+            irq_restore(f);
             send_segment(c, ACK, 0, 0, c->snd_nxt);
         } else {
             // Out of order or a retransmission we already have: re-ACK what
@@ -295,6 +373,9 @@ void tcp_input(ipv4_t src, ipv4_t dst, const uint8_t* seg, uint16_t len){
             else                          c->state = TCP_CLOSE_WAIT;
         }
     }
+
+    // Anyone blocked on this connection re-checks: data arrived, or the state moved.
+    waitq_wake_all(&c->wq);
 }
 
 void tcp_tick(void){
@@ -306,6 +387,7 @@ void tcp_tick(void){
         if (++c->retries > MAX_RETRIES){
             c->state = TCP_CLOSED;
             clear_retransmit(c);
+            waitq_wake_all(&c->wq);
             continue;
         }
 

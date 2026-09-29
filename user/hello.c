@@ -5,53 +5,15 @@
 // anything outside its own two mappings is int 0x80. That is the whole point
 // of it existing.
 //
-// Built as a flat binary linked at PROC_BASE (see user/user.ld) and copied
+// Built as a flat binary (the ELF programs are hi, cat, ls, utest) linked at PROC_BASE (see user/user.ld) and copied
 // onto the disk image, where proc_spawn finds it by name.
 
-#define SYS_EXIT   1
-#define SYS_WRITE  2
-#define SYS_GETPID 3
-#define SYS_YIELD  4
-#define SYS_SLEEP  5
-#define SYS_TICKS  6
+#include "hawk.h"
 
-static int syscall1(int nr, int a){
-    int ret;
-    __asm__ __volatile__("int $0x80" : "=a"(ret) : "a"(nr), "b"(a) : "memory");
-    return ret;
-}
-
-static int syscall2(int nr, int a, int b){
-    int ret;
-    __asm__ __volatile__("int $0x80" : "=a"(ret) : "a"(nr), "b"(a), "c"(b) : "memory");
-    return ret;
-}
-
-static int syscall0(int nr){
-    int ret;
-    __asm__ __volatile__("int $0x80" : "=a"(ret) : "a"(nr) : "memory");
-    return ret;
-}
-
-static unsigned slen(const char* s){
-    unsigned n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static void print(const char* s){
-    syscall2(SYS_WRITE, (int)s, (int)slen(s));
-}
-
-// No libc, so the number formatting is here too.
-static void print_num(unsigned v){
-    char buf[12];
-    int i = 11;
-    buf[i--] = 0;
-    if (!v) buf[i--] = '0';
-    while (v && i >= 0){ buf[i--] = (char)('0' + (v % 10)); v /= 10; }
-    print(buf + i + 1);
-}
+static void print(const char* s){ hawk_puts(s); }
+static void print_num(unsigned v){ hawk_putnum(v); }
+static int syscall1(int nr, int a){ return hawk_sys3(nr, a, 0, 0); }
+static int syscall0(int nr){ return hawk_sys3(nr, 0, 0, 0); }
 
 // The entry point has to be the first byte of the image: proc_spawn jumps
 // straight to PROC_BASE, with no header to say otherwise. user.ld places this

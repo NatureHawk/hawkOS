@@ -12,6 +12,7 @@
 #include "header/kprintf.h"
 #include "header/task.h"
 #include "header/tcp.h"
+#include "header/sync.h"
 
 extern volatile unsigned long long ticks;
 
@@ -188,6 +189,8 @@ void arp_request(ipv4_t ip){
     eth_send(BROADCAST_MAC, ETHERTYPE_ARP, &a, sizeof(a));
 }
 
+static waitq_t arp_wq = WAITQ_INIT;      // woken when the cache learns an address
+
 int arp_resolve(ipv4_t ip, uint8_t mac_out[ETH_ALEN], uint32_t timeout_ms){
     if (arp_lookup(ip, mac_out) == 0) return 0;
 
@@ -196,9 +199,10 @@ int arp_resolve(ipv4_t ip, uint8_t mac_out[ETH_ALEN], uint32_t timeout_ms){
 
     while (ticks < deadline){
         if (ticks >= next_try){ arp_request(ip); next_try = ticks + 50; }
+        uint32_t seq = waitq_seq(&arp_wq);
         net_poll();
         if (arp_lookup(ip, mac_out) == 0) return 0;
-        task_sleep(10);
+        waitq_wait_seq(&arp_wq, seq, 10);
     }
     return -1;
 }
@@ -378,7 +382,7 @@ static void eth_input(const uint8_t* frame, uint16_t len){
 void net_poll(void){
     if (!link_up) return;
     // Bounded per call so a flood cannot starve everything else on this task.
-    for (int i = 0; i < 32; i++){
+    for (int i = 0; i < 128; i++){
         uint16_t n = rtl8139_poll(rx_frame, sizeof(rx_frame));
         if (!n) break;
         eth_input(rx_frame, n);
@@ -388,9 +392,12 @@ void net_poll(void){
 static void net_task(void* arg){
     (void)arg;
     for (;;){
+        // Sequence first: a frame the timer interrupt drains after net_poll
+        // has looked is then seen as "already woken" instead of being slept on.
+        uint32_t seq = waitq_seq(&rtl8139_rx_wq);
         net_poll();
-        tcp_tick();        // retransmissions ride on the same 100 Hz cadence
-        task_sleep(10);
+        tcp_tick();        // retransmissions still need a ~100 Hz look
+        waitq_wait_seq(&rtl8139_rx_wq, seq, 10);
     }
 }
 

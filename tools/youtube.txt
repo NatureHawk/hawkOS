@@ -1,0 +1,15 @@
+# YouTube through tools/ytgate.py, which must already be running on the host:
+#   python3 tools/ytgate.py &
+#   python3 tools/shot.py --script tools/youtube.txt --net -device AC97,audiodev=snd0 -audiodev none,id=snd0
+wait 2
+click 640 754
+wait 3
+click 500 119
+wait 1
+type yt kurzgesagt black hole
+key ret
+wait 40
+shot shots/s30-youtube-search.png
+click 404 370
+wait 40
+shot shots/s31-youtube-watch.png

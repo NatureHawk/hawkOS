@@ -15,6 +15,9 @@ extern uint8_t kernel_start[];
 extern uint8_t kernel_end[];
 
 static uint8_t  bitmap[BITMAP_BYTES];
+// Sharers per frame: 0 for a free frame or one reserved at boot and never
+// allocated; pmm_alloc_frame() sets 1 and copy-on-write sharing adds to it.
+static uint16_t refs[MAX_FRAMES];
 static uint32_t free_count = 0;
 static uint32_t ram_top    = 0;   // highest byte address of usable RAM we've seen
 static uint32_t scan_hint  = 0;   // next-fit cursor so alloc isn't O(n) from frame 0 every time
@@ -129,6 +132,7 @@ void* pmm_alloc_frame(void){
         if (!test_bit(f)) {
             set_bit(f);
             free_count--;
+            refs[f] = 1;
             scan_hint = f + 1;
             return (void*)(f * PMM_FRAME_SIZE);
         }
@@ -136,9 +140,51 @@ void* pmm_alloc_frame(void){
     return 0;
 }
 
+// Drops one reference; the frame goes back to the pool only when the last
+// sharer lets go. A frame nobody counted (refs == 0) is freed outright, as
+// before.
 void pmm_free_frame(void* frame_phys){
     uint32_t f = (uint32_t)frame_phys / PMM_FRAME_SIZE;
+    if (f >= MAX_FRAMES) return;
+    if (refs[f] > 1){ refs[f]--; return; }
+    refs[f] = 0;
     mark_free(f);
+}
+
+int pmm_ref_frame(void* frame_phys){
+    uint32_t f = (uint32_t)frame_phys / PMM_FRAME_SIZE;
+    if (f >= MAX_FRAMES || !test_bit(f) || refs[f] == 0xFFFFu) return -1;
+    refs[f]++;
+    return 0;
+}
+
+uint32_t pmm_frame_refs(void* frame_phys){
+    uint32_t f = (uint32_t)frame_phys / PMM_FRAME_SIZE;
+    return f < MAX_FRAMES ? refs[f] : 0;
+}
+
+// n adjacent frames. Searched from the top of RAM downward so big buffers
+// settle at the far end and the single-frame allocator, which works upward
+// from the kernel, keeps its end unfragmented.
+void* pmm_alloc_contig(uint32_t n){
+    if (n == 0) return 0;
+    uint32_t top = ram_top / PMM_FRAME_SIZE;
+    if (top > MAX_FRAMES) top = MAX_FRAMES;
+    uint32_t run = 0;
+    for (uint32_t f = top; f-- > 0; ){
+        if (test_bit(f)){ run = 0; continue; }
+        if (++run == n){
+            for (uint32_t k = 0; k < n; k++){ set_bit(f + k); refs[f + k] = 1; }
+            free_count -= n;
+            return (void*)(f * PMM_FRAME_SIZE);
+        }
+    }
+    return 0;
+}
+
+void pmm_free_contig(void* phys, uint32_t n){
+    for (uint32_t k = 0; k < n; k++)
+        pmm_free_frame((uint8_t*)phys + k * PMM_FRAME_SIZE);
 }
 
 uint32_t pmm_total_frames(void){ return MAX_FRAMES; }

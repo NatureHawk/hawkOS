@@ -59,6 +59,7 @@ static uint32_t state_colour(int state){
         case 2:  return TH_OK;      // running
         case 1:  return TH_LINK;    // ready
         case 3:  return TH_WARN;    // sleeping
+        case 5:  return TH_WARN;    // blocked
         default: return TH_TEXT_DIM;
     }
 }

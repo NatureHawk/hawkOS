@@ -36,3 +36,7 @@ tools/pages/*.html
 
 # Working files from a screenshot session (crops, throwaway captures).
 shots/_*.png
+
+# User programs built as ELF (user/*.elf) and Python bytecode caches.
+*.elf
+__pycache__/

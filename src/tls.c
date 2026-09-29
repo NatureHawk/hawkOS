@@ -155,7 +155,7 @@ static int sock_read(void* ctx, unsigned char* buf, size_t len){
         if (n > 0) return n;
         if (n < 0){ t->eof = 1; return -1; }
         if (ticks > deadline) return -1;
-        task_sleep(10);
+        tcp_wait_data(t->tcp, 100);
     }
 }
 

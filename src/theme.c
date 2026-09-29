@@ -166,13 +166,67 @@ static const th_palette_t DARK = {
     .page_button_bg = GFX_RGB(0x2A, 0x2D, 0x33),
 };
 
+// ---------------------------------------------------------------- wallpapers
+
+typedef struct { const char* name; uint32_t top, mid, bot; } wall_t;
+
+static const wall_t WALLS[] = {
+    { "Dawn",     0, 0, 0 },                 // the palette's own stops
+    { "Ocean",    GFX_RGB(0x0B, 0x3C, 0x5D), GFX_RGB(0x1F, 0x7A, 0x8C), GFX_RGB(0x9B, 0xD9, 0xCF) },
+    { "Forest",   GFX_RGB(0x10, 0x35, 0x2A), GFX_RGB(0x2E, 0x6B, 0x4E), GFX_RGB(0xB4, 0xCF, 0x8C) },
+    { "Graphite", GFX_RGB(0x22, 0x25, 0x2B), GFX_RGB(0x4B, 0x50, 0x5A), GFX_RGB(0x9A, 0xA0, 0xAB) },
+};
+#define WALL_N ((int)(sizeof(WALLS) / sizeof(WALLS[0])))
+
+static int wall_sel = 0;
+
+static uint32_t lerp(uint32_t a, uint32_t b, uint32_t t, uint32_t of){
+    uint32_t r  = (((a >> 16) & 0xFF) * (of - t) + ((b >> 16) & 0xFF) * t) / of;
+    uint32_t g  = (((a >>  8) & 0xFF) * (of - t) + ((b >>  8) & 0xFF) * t) / of;
+    uint32_t bl = ((a & 0xFF) * (of - t) + (b & 0xFF) * t) / of;
+    return GFX_RGB(r, g, bl);
+}
+
+static uint32_t darken(uint32_t c){
+    return GFX_RGB((((c >> 16) & 0xFF) * 107) >> 8, (((c >> 8) & 0xFF) * 107) >> 8,
+                   ((c & 0xFF) * 107) >> 8);
+}
+
+uint32_t theme_wallpaper_stop(int n, int dark, int i){
+    if (n < 0 || n >= WALL_N) n = 0;
+    if (i < 0) i = 0;
+    if (i > 7) i = 7;
+    if (n == 0) return (dark ? DARK.wall : LIGHT.wall)[i];
+    const wall_t* w = &WALLS[n];
+    // Seven intervals: the first three run top->mid, the last four mid->bottom.
+    uint32_t c = (i <= 3) ? lerp(w->top, w->mid, (uint32_t)i, 3)
+                          : lerp(w->mid, w->bot, (uint32_t)(i - 3), 4);
+    return dark ? darken(c) : c;
+}
+
+static void apply_wall(void){
+    for (int i = 0; i < 8; i++) th.wall[i] = theme_wallpaper_stop(wall_sel, dark_on, i);
+    th.desk_top = th.wall[0];
+    th.desk_bot = th.wall[7];
+}
+
+int         theme_wallpaper_count(void){ return WALL_N; }
+const char* theme_wallpaper_name(int n){ return (n >= 0 && n < WALL_N) ? WALLS[n].name : ""; }
+int         theme_wallpaper(void){ return wall_sel; }
+
+void theme_set_wallpaper(int n){
+    wall_sel = (n >= 0 && n < WALL_N) ? n : 0;
+    apply_wall();
+}
+
 void theme_set_dark(int on){
     dark_on = on ? 1 : 0;
     th = dark_on ? DARK : LIGHT;
+    apply_wall();
 }
 
 int  theme_is_dark(void){ return dark_on; }
-void theme_init(void){ theme_set_dark(0); }
+void theme_init(void){ wall_sel = 0; theme_set_dark(0); }
 
 uint32_t th_readable(uint32_t c){
     uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;

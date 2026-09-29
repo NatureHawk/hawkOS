@@ -16,6 +16,7 @@
 #include "header/font.h"
 #include "header/fontprop.h"
 #include "header/kprintf.h"
+#include "header/kstring.h"
 
 static uint8_t* fb        = 0;
 static uint32_t fb_pitch  = 0;
@@ -326,6 +327,127 @@ void gfx_copy_in(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t*
         uint32_t* d = (uint32_t*)(dst_base + py * dst_pitch);
         for (uint32_t c = 0; c < w; c++)
             if (x + c < fb_w) d[x + c] = src[row * w + c];
+    }
+}
+
+void gfx_blit_scaled(int dx, int dy, int dw, int dh,
+                     const uint32_t* src, int sw, int sh, int stride){
+    if (!available || !src || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+
+    int x0 = dx, y0 = dy, x1 = dx + dw, y1 = dy + dh;
+    if (x0 < (int)clip_x0) x0 = (int)clip_x0;
+    if (y0 < (int)clip_y0) y0 = (int)clip_y0;
+    if (x1 > (int)clip_x1) x1 = (int)clip_x1;
+    if (y1 > (int)clip_y1) y1 = (int)clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    // 16.16 steps through the source. The column map is the same for every
+    // row, so it is worked out once; for a full-window video frame that turns
+    // a multiply per pixel into a table lookup.
+    uint32_t xstep = ((uint32_t)sw << 16) / (uint32_t)dw;
+    uint32_t ystep = ((uint32_t)sh << 16) / (uint32_t)dh;
+    static uint16_t cols[GFX_MAX_W];
+    int span = x1 - x0;
+    for (int i = 0; i < span; i++){
+        uint32_t sx = ((uint32_t)(x0 - dx + i) * xstep) >> 16;
+        cols[i] = (uint16_t)(sx < (uint32_t)sw ? sx : (uint32_t)sw - 1);
+    }
+
+    if (dw == sw){
+        int sx0 = x0 - dx;
+        for (int y = y0; y < y1; y++){
+            uint32_t sy = ((uint32_t)(y - dy) * ystep) >> 16;
+            if (sy >= (uint32_t)sh) sy = (uint32_t)sh - 1;
+            memcpy(dst_base + (uint32_t)y * dst_pitch + (uint32_t)x0 * 4u,
+                   src + sy * (uint32_t)stride + (uint32_t)sx0, (uint32_t)span * 4u);
+        }
+        return;
+    }
+
+    for (int y = y0; y < y1; y++){
+        uint32_t sy = ((uint32_t)(y - dy) * ystep) >> 16;
+        if (sy >= (uint32_t)sh) sy = (uint32_t)sh - 1;
+        const uint32_t* s = src + sy * (uint32_t)stride;
+        uint32_t* d = (uint32_t*)(dst_base + (uint32_t)y * dst_pitch) + x0;
+        for (int i = 0; i < span; i++) d[i] = s[cols[i]];
+    }
+}
+
+// BT.601 in integers: R = (298(Y-16) + 409(Cr-128)) / 256, and so on. The
+// per-component products are tabulated once, and the final clamp to 0..255 is
+// a table lookup too, so a pixel is five loads, three adds and three shifts.
+static int32_t  yuv_y[256], yuv_rv[256], yuv_gu[256], yuv_gv[256], yuv_bu[256];
+static uint8_t  yuv_clamp_tab[1024];
+static int      yuv_ready = 0;
+#define YUV_CLAMP(v) yuv_clamp_tab[((v) >> 8) + 384]
+
+static void yuv_init(void){
+    for (int i = 0; i < 256; i++){
+        yuv_y[i]  = 298 * (i - 16) + 128;
+        yuv_rv[i] = 409 * (i - 128);
+        yuv_gu[i] = -100 * (i - 128);
+        yuv_gv[i] = -208 * (i - 128);
+        yuv_bu[i] = 516 * (i - 128);
+    }
+    for (int i = 0; i < 1024; i++){
+        int v = i - 384;
+        yuv_clamp_tab[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+    yuv_ready = 1;
+}
+
+void gfx_blit_yuv(int dx, int dy, int dw, int dh,
+                  const uint8_t* Y, const uint8_t* U, const uint8_t* V,
+                  int sw, int sh, int ystride, int cstride){
+    if (!available || !Y || !U || !V || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    if (!yuv_ready) yuv_init();
+
+    int x0 = dx, y0 = dy, x1 = dx + dw, y1 = dy + dh;
+    if (x0 < (int)clip_x0) x0 = (int)clip_x0;
+    if (y0 < (int)clip_y0) y0 = (int)clip_y0;
+    if (x1 > (int)clip_x1) x1 = (int)clip_x1;
+    if (y1 > (int)clip_y1) y1 = (int)clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    uint32_t xstep = ((uint32_t)sw << 16) / (uint32_t)dw;
+    uint32_t ystep = ((uint32_t)sh << 16) / (uint32_t)dh;
+    static uint16_t cols[GFX_MAX_W];
+    int span = x1 - x0;
+    for (int i = 0; i < span; i++){
+        uint32_t sx = ((uint32_t)(x0 - dx + i) * xstep) >> 16;
+        cols[i] = (uint16_t)(sx < (uint32_t)sw ? sx : (uint32_t)sw - 1);
+    }
+
+    const uint32_t* prev = 0;
+    uint32_t prev_sy = 0xFFFFFFFFu;
+    for (int y = y0; y < y1; y++){
+        uint32_t sy = ((uint32_t)(y - dy) * ystep) >> 16;
+        if (sy >= (uint32_t)sh) sy = (uint32_t)sh - 1;
+        uint32_t* d = (uint32_t*)(dst_base + (uint32_t)y * dst_pitch) + x0;
+
+        if (sy == prev_sy && prev){
+            memcpy(d, prev, (uint32_t)span * 4u);
+            continue;
+        }
+
+        const uint8_t* yr = Y + sy * (uint32_t)ystride;
+        const uint8_t* ur = U + (sy >> 1) * (uint32_t)cstride;
+        const uint8_t* vr = V + (sy >> 1) * (uint32_t)cstride;
+        uint32_t last_sx = 0xFFFFFFFFu, last_px = 0;
+        for (int i = 0; i < span; i++){
+            uint32_t sx = cols[i];
+            if (sx == last_sx){ d[i] = last_px; continue; }
+            int32_t  l  = yuv_y[yr[sx]];
+            uint32_t cu = ur[sx >> 1], cv = vr[sx >> 1];
+            uint32_t r = YUV_CLAMP(l + yuv_rv[cv]);
+            uint32_t g = YUV_CLAMP(l + yuv_gu[cu] + yuv_gv[cv]);
+            uint32_t b = YUV_CLAMP(l + yuv_bu[cu]);
+            last_px = (r << 16) | (g << 8) | b;
+            last_sx = sx;
+            d[i] = last_px;
+        }
+        prev = d;
+        prev_sy = sy;
     }
 }
 

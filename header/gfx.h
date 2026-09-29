@@ -96,6 +96,23 @@ uint32_t gfx_round_inset(uint32_t r, uint32_t k);
 void     gfx_copy_out(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t* dst);
 void     gfx_copy_in (uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* src);
 
+// Draws a 0x00RRGGBB image scaled (nearest neighbour) into the rectangle at
+// dx,dy of size dw x dh, clipped. Signed destination so an image scrolled
+// half off the top of a page still draws its visible half. `stride` is in
+// pixels. Used for decoded video frames and web images.
+void gfx_blit_scaled(int dx, int dy, int dw, int dh,
+                     const uint32_t* src, int sw, int sh, int stride);
+
+// Draws a YUV 4:2:0 picture (MPEG's native form: a full-size luma plane and
+// half-size chroma planes) scaled into dw x dh at dx,dy, converting to RGB on
+// the way. Only the pixels that end up on screen are converted, and when the
+// picture is being enlarged a repeated source row is copied rather than
+// converted again -- so showing a 854x480 frame at 640x360 converts 230 K
+// pixels, not 410 K, and never writes an intermediate RGB copy at all.
+void gfx_blit_yuv(int dx, int dy, int dw, int dh,
+                  const uint8_t* y, const uint8_t* cb, const uint8_t* cr,
+                  int sw, int sh, int ystride, int cstride);
+
 // 5x7 font (see font8x8.h) — used by the text console.
 void gfx_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg, int scale);
 void gfx_draw_string(uint32_t x, uint32_t y, const char* s, uint32_t fg, uint32_t bg, int scale);

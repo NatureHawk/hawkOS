@@ -7,10 +7,12 @@
 // before handing a pointer to the hardware.
 #include <stdint.h>
 #include "header/rtl8139.h"
+#include "header/irqctl.h"
 #include "header/pci.h"
 #include "header/io.h"
 #include "header/kprintf.h"
 #include "header/kstring.h"
+#include "header/sync.h"
 
 #define RTL_VENDOR 0x10EC
 #define RTL_DEVICE 0x8139
@@ -37,9 +39,15 @@
 // WRAP set so a frame that runs off the end of the ring is written past it
 // contiguously instead of being split — which is why the buffer is
 // over-allocated by a whole MTU below.
-#define RCR_CONFIG    0x0000068F
+//
+// Bits 11-12 pick the ring size: 10 is 32 KB. The original 8 KB ring held
+// five full frames, and a server answering into a 32 KB TCP window sends
+// twenty back to back -- so every burst overflowed the ring between two
+// polls, and a video stream spent more time in retransmission than in
+// transfer. (64 KB is the one size WRAP is not honoured for, hence 32.)
+#define RCR_CONFIG    (0x0000068Fu | (2u << 11))
 
-#define RX_BUF_LEN    8192
+#define RX_BUF_LEN    32768
 #define RX_BUF_PAD    16
 #define RX_BUF_TOTAL  (RX_BUF_LEN + RX_BUF_PAD + 1536)
 
@@ -136,8 +144,9 @@ int rtl8139_send(const void* frame, uint16_t len){
     return -1;   // all four descriptors in flight
 }
 
-uint16_t rtl8139_poll(uint8_t* buf, uint16_t cap){
-    if (!present) return 0;
+// Takes the next frame off the card's ring into buf. Returns its length, or
+// 0 for an empty ring or a bad frame (which is consumed either way).
+static uint16_t hw_take(uint8_t* buf, uint16_t cap){
     if (inb(io_base + REG_CMD) & CMD_RX_EMPTY) return 0;
 
     // Each entry in the ring is a 2-byte status word, a 2-byte length, then
@@ -150,8 +159,9 @@ uint16_t rtl8139_poll(uint8_t* buf, uint16_t cap){
     if ((status & 0x0001) && length >= 4 && length <= 1600){
         uint16_t data_len = (uint16_t)(length - 4);
         out = data_len < cap ? data_len : cap;
-        for (uint16_t i = 0; i < out; i++)
-            buf[i] = rx_buf[(rx_offset + 4 + i) % RX_BUF_TOTAL];
+        // WRAP is set, so a frame is contiguous even where it runs past the
+        // end of the ring -- into the padding the buffer was sized with.
+        memcpy(buf, &rx_buf[rx_offset + 4], out);
     }
 
     // Advance past this entry, dword-aligned as the card requires.
@@ -164,5 +174,90 @@ uint16_t rtl8139_poll(uint8_t* buf, uint16_t cap){
     outw(io_base + REG_CAPR, (uint16_t)(rx_offset - 16));
 
     outw(io_base + REG_ISR, 0x0005);   // clear ROK / RER
+    return out;
+}
+
+// ------------------------------------------------------ receive queue
+//
+// The card's own ring holds 32 KB, which a server fills in well under a
+// tenth of a second. Emptying it from the network task alone meant that when
+// the task waited its turn behind a busy one -- the video decoder, flat out
+// -- frames were dropped, the sender backed off, and a stream that had
+// bandwidth to spare starved. So the timer interrupt empties the ring into
+// this much larger queue every 10 ms, whatever the scheduler is doing, and
+// the network task takes frames from the queue at its own pace.
+//
+// Each entry is a 2-byte length and the frame. head is advanced only by the
+// producer (the interrupt, or rtl8139_poll with interrupts off) and tail only
+// by the consumer, so neither needs a lock.
+#define SWQ_SIZE (512u * 1024u)
+
+static uint8_t           swq[SWQ_SIZE];
+static volatile uint32_t swq_head = 0, swq_tail = 0;
+static uint32_t          swq_dropped = 0;
+static uint8_t           take_buf[1600];
+
+static void swq_put(const uint8_t* src, uint32_t n){
+    uint32_t at = swq_head % SWQ_SIZE;
+    uint32_t first = SWQ_SIZE - at;
+    if (first > n) first = n;
+    memcpy(&swq[at], src, first);
+    if (n > first) memcpy(swq, src + first, n - first);
+}
+
+static void swq_get(uint32_t from, uint8_t* dst, uint32_t n){
+    uint32_t at = from % SWQ_SIZE;
+    uint32_t first = SWQ_SIZE - at;
+    if (first > n) first = n;
+    memcpy(dst, &swq[at], first);
+    if (n > first) memcpy(dst + first, swq, n - first);
+}
+
+// Interrupts must be off: called from the timer interrupt, and by
+// rtl8139_poll inside an irq_save.
+waitq_t rtl8139_rx_wq = WAITQ_INIT;
+
+// Returns non-zero if it added frames. Split from the public entry point so
+// the network task's own drain inside rtl8139_poll does not raise the wake-up
+// it is about to wait on: the task is the consumer and loops until the queue
+// is empty, so a wake from there would only make it spin under load.
+static int drain_queue(void){
+    if (!present) return 0;
+    int queued = 0;
+    for (int guard = 0; guard < 256; guard++){
+        if (inb(io_base + REG_CMD) & CMD_RX_EMPTY) break;
+        uint16_t n = hw_take(take_buf, sizeof(take_buf));
+        if (!n) continue;
+        if (SWQ_SIZE - (swq_head - swq_tail) < (uint32_t)n + 2u){ swq_dropped++; continue; }
+        uint8_t len[2] = { (uint8_t)n, (uint8_t)(n >> 8) };
+        swq_put(len, 2);
+        swq_head += 2;
+        swq_put(take_buf, n);
+        swq_head += n;
+        queued = 1;
+    }
+    return queued;
+}
+
+void rtl8139_drain(void){
+    if (drain_queue()) waitq_wake_all(&rtl8139_rx_wq);
+}
+
+uint32_t rtl8139_dropped(void){ return swq_dropped; }
+
+uint16_t rtl8139_poll(uint8_t* buf, uint16_t cap){
+    if (!present) return 0;
+
+    uint32_t f = irq_save();
+    drain_queue();
+    irq_restore(f);
+
+    if (swq_head == swq_tail) return 0;
+    uint8_t len[2];
+    swq_get(swq_tail, len, 2);
+    uint16_t n = (uint16_t)(len[0] | (len[1] << 8));
+    uint16_t out = n < cap ? n : cap;
+    swq_get(swq_tail + 2, buf, out);
+    swq_tail += 2u + n;
     return out;
 }

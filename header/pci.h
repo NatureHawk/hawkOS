@@ -10,6 +10,7 @@ typedef struct {
     uint16_t vendor_id, device_id;
     uint8_t  irq_line;
     uint32_t bar[6];
+    uint8_t  class_code, subclass, prog_if;   // filled by pci_find_class
 } pci_device_t;
 
 uint32_t pci_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
@@ -18,6 +19,10 @@ void     pci_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint3
 // Scans every bus/slot/function for the given vendor/device pair. Returns 0
 // and fills `out` on a hit, -1 if the device is not present.
 int  pci_find(uint16_t vendor_id, uint16_t device_id, pci_device_t* out);
+
+// Finds the first device of a class/subclass (e.g. 0x01/0x01 = IDE controller).
+// Fills the same fields as pci_find plus the class bytes.
+int  pci_find_class(uint8_t class_code, uint8_t subclass, pci_device_t* out);
 
 // Sets the bus-master bit in the command register. A NIC that DMAs into
 // host memory does nothing at all until this is on.

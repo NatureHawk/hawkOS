@@ -26,6 +26,8 @@
 #include "header/net.h"
 #include "header/pmm.h"
 #include "header/task.h"
+#include "header/acpi.h"
+#include "header/settings.h"
 
 extern volatile unsigned long long ticks;
 
@@ -80,36 +82,22 @@ static void tile(int cx, int cy, int s, uint32_t top, uint32_t bot){
     }
 }
 
-// Files: the two-tone square with a face. Half light, half dark, two eyes and
-// a smile — the most recognisable file-manager icon there is, and it happens
-// to be four rectangles and a curve.
+// Files: a folder. A plain folder is the universal picture for "your files"
+// and, unlike a mascot, belongs to nobody: a white folder on a blue tile, with
+// a lighter back panel behind it so it reads as a thing with depth rather than
+// as a rectangle with a tab.
 static void art_files(int cx, int cy, int s){
-    tile(cx, cy, s, GFX_RGB(0x7F, 0xC7, 0xFF), GFX_RGB(0x2E, 0x8B, 0xE0));
-    int x = cx - s / 2, y = cy - s / 2, r = s / 4;
-    for (int row = 0; row < s; row++){
-        uint32_t inset = 0;
-        if (row < r)          inset = gfx_round_inset((uint32_t)r, (uint32_t)row);
-        else if (row >= s - r) inset = gfx_round_inset((uint32_t)r, (uint32_t)(s - 1 - row));
-        int lx = x + (int)inset;
-        int half = cx - lx;
-        if (half > 0) gfx_fill_rect((uint32_t)lx, (uint32_t)(y + row), (uint32_t)half, 1,
-                                    GFX_RGB(0xEC, 0xF3, 0xFA));
-    }
-    // The face. Each feature is drawn in the colour of the half it does not
-    // sit on, which is the trick that makes the two-tone square read as one
-    // face rather than as two panels that happen to be adjacent.
-    uint32_t ink = GFX_RGB(0x22, 0x33, 0x44), pap = GFX_RGB(0xF0, 0xF6, 0xFC);
-    int ew = s / 14; if (ew < 2) ew = 2;
-    int eh = s / 7;  if (eh < 4) eh = 4;
-    int ey = cy - s / 5;
-    gfx_fill_rect((uint32_t)(cx - s / 5 - ew / 2), (uint32_t)ey, (uint32_t)ew, (uint32_t)eh, ink);
-    gfx_fill_rect((uint32_t)(cx + s / 6 - ew / 2), (uint32_t)ey, (uint32_t)ew, (uint32_t)eh, pap);
-
-    int mw = s / 3, my = cy + s / 8;
-    for (int i = -mw; i <= mw; i++){
-        int lift = (i * i) / (mw * 4 > 0 ? mw * 4 : 1);
-        gfx_fill_rect((uint32_t)(cx + i), (uint32_t)(my - lift), 1, 2, i < 0 ? ink : pap);
-    }
+    tile(cx, cy, s, GFX_RGB(0x62, 0xB6, 0xF7), GFX_RGB(0x1D, 0x68, 0xD0));
+    int fw = s * 5 / 8, fh = s * 7 / 16;
+    int x = cx - fw / 2, y = cy - fh / 2 + s / 12;
+    int tabw = fw * 2 / 5, tabh = s / 9;
+    if (tabh < 3) tabh = 3;
+    gfx_fill_round_rect((uint32_t)x, (uint32_t)(y - tabh), (uint32_t)tabw, (uint32_t)(tabh + 6), 3,
+                        GFX_RGB(0xBF, 0xDD, 0xFC));
+    gfx_fill_round_rect((uint32_t)x, (uint32_t)y, (uint32_t)fw, (uint32_t)fh, 4,
+                        GFX_RGB(0xBF, 0xDD, 0xFC));
+    gfx_fill_round_rect((uint32_t)x, (uint32_t)(y + s / 14), (uint32_t)fw,
+                        (uint32_t)(fh - s / 14), 4, GFX_RGB(0xFF, 0xFF, 0xFF));
 }
 
 static void art_term(int cx, int cy, int s){
@@ -135,19 +123,65 @@ static void art_taskman(int cx, int cy, int s){
     }
 }
 
-// Browser: the compass. A blue disc with a two-tone needle across it, which
-// is legible as "the internet" at 48 pixels in a way a globe is not.
+static int isqrt(int n){
+    int r = 0;
+    while ((r + 1) * (r + 1) <= n) r++;
+    return r;
+}
+
+// Browser: a globe. A disc of latitude and meridian lines on a teal tile --
+// the picture that means "the web" without borrowing any browser's own mark.
 static void art_browser(int cx, int cy, int s){
-    int r = s / 2;
-    gfx_fill_circle(cx, cy, r, GFX_RGB(0x2C, 0x8F, 0xE8));
-    gfx_fill_circle(cx, cy, r - 3, GFX_RGB(0xE9, 0xF3, 0xFC));
-    gfx_fill_circle(cx, cy, r - 5, GFX_RGB(0x1F, 0x7C, 0xD6));
-    for (int i = 0; i < r - 6; i++){
-        int w = (r - 6 - i) / 2 + 1;
-        gfx_fill_rect((uint32_t)(cx + i - w / 2), (uint32_t)(cy - i), (uint32_t)w, 1,
-                      GFX_RGB(0xFF, 0x5F, 0x57));
-        gfx_fill_rect((uint32_t)(cx - i - w / 2), (uint32_t)(cy + i), (uint32_t)w, 1,
-                      GFX_RGB(0xF4, 0xF7, 0xFB));
+    tile(cx, cy, s, GFX_RGB(0x3F, 0xD0, 0xC4), GFX_RGB(0x12, 0x7F, 0xA8));
+    int r = s * 3 / 10;
+    uint32_t w = GFX_RGB(0xFF, 0xFF, 0xFF);
+    gfx_draw_circle(cx, cy, r, w);
+    gfx_draw_circle(cx, cy, r - 1, w);
+
+    gfx_fill_rect((uint32_t)(cx - r), (uint32_t)cy, (uint32_t)(2 * r + 1), 2, w);           // equator
+    gfx_fill_rect((uint32_t)cx, (uint32_t)(cy - r), 2, (uint32_t)(2 * r + 1), w);           // meridian
+
+    for (int k = -1; k <= 1; k += 2){                                                       // parallels
+        int yy = cy + k * (r / 2);
+        int half = isqrt(r * r - (r / 2) * (r / 2));
+        gfx_fill_rect((uint32_t)(cx - half), (uint32_t)yy, (uint32_t)(2 * half + 1), 1, w);
+    }
+    int a = r / 2;                                                                          // the oval
+    for (int y = -r; y <= r; y++){
+        int x = a * isqrt(r * r - y * y) / r;
+        gfx_fill_rect((uint32_t)(cx - x), (uint32_t)(cy + y), 2, 1, w);
+        gfx_fill_rect((uint32_t)(cx + x), (uint32_t)(cy + y), 2, 1, w);
+    }
+}
+
+// Editor: a sheet of paper with lines of text and a pencil across the corner.
+static void art_edit(int cx, int cy, int s){
+    tile(cx, cy, s, GFX_RGB(0xFF, 0xC8, 0x5C), GFX_RGB(0xF0, 0x86, 0x2A));
+    int pw = s * 11 / 25, ph = s * 14 / 25;
+    int x = cx - pw / 2 - s / 14, y = cy - ph / 2;
+    gfx_fill_round_rect((uint32_t)x, (uint32_t)y, (uint32_t)pw, (uint32_t)ph, 3, GFX_RGB(0xFF, 0xFF, 0xFF));
+    for (int i = 0; i < 4; i++)
+        gfx_fill_rect((uint32_t)(x + s / 12), (uint32_t)(y + s / 8 + i * (s / 9)),
+                      (uint32_t)(pw - s / 6 - (i == 3 ? pw / 3 : 0)), 2, GFX_RGB(0xB4, 0xB9, 0xC4));
+    // The pencil: a diagonal bar with a darker tip, drawn as a run of squares.
+    int len = s / 3, t = s / 12 > 3 ? s / 12 : 3;
+    int px = x + pw - t / 2, py = y + ph - s / 5;
+    for (int i = 0; i < len; i++)
+        gfx_fill_rect((uint32_t)(px + i / 2 + 1 - len / 4), (uint32_t)(py - i / 2), (uint32_t)t,
+                      (uint32_t)t, i < len / 5 ? GFX_RGB(0x40, 0x30, 0x28) : GFX_RGB(0x3A, 0x8B, 0xE8));
+}
+
+// Settings: three sliders, each with its knob at a different point.
+static void art_settings(int cx, int cy, int s){
+    tile(cx, cy, s, GFX_RGB(0x8A, 0x92, 0xA3), GFX_RGB(0x4A, 0x51, 0x60));
+    static const int KNOB[3] = { 5, 14, 9 };
+    int lw = s * 3 / 5, x0 = cx - lw / 2;
+    for (int i = 0; i < 3; i++){
+        int yy = cy - s / 4 + i * (s / 4);
+        gfx_fill_rect((uint32_t)x0, (uint32_t)(yy - 1), (uint32_t)lw, 3, GFX_RGB(0xE6, 0xE9, 0xEF));
+        int kx = x0 + KNOB[i] * lw / 18;
+        gfx_fill_circle(kx, yy, s / 11 + 1, GFX_RGB(0xFF, 0xFF, 0xFF));
+        gfx_draw_circle(kx, yy, s / 11 + 1, GFX_RGB(0x33, 0x39, 0x46));
     }
 }
 
@@ -160,12 +194,17 @@ static void art_about(int cx, int cy, int s){
                   (uint32_t)(s / 2 - w * 2), GFX_RGB(0xFF, 0xFF, 0xFF));
 }
 
+// The order is the dock's order, and the act_* helpers below index into it.
+enum { APP_FILES, APP_TERM, APP_BROWSER, APP_EDIT, APP_SETTINGS, APP_ACTIVITY, APP_ABOUT };
+
 static const app_t APPS[] = {
-    { "Files",        art_files,   app_files_open   },
-    { "Terminal",     art_term,    app_term_open    },
-    { "Browser",      art_browser, app_browser_open },
-    { "Activity",     art_taskman, app_taskman_open },
-    { "About",        art_about,   app_about_open   },   // matches "About hawkOS"
+    { "Files",        art_files,    app_files_open    },
+    { "Terminal",     art_term,     app_term_open     },
+    { "Browser",      art_browser,  app_browser_open  },
+    { "Editor",       art_edit,     app_edit_open     },
+    { "Settings",     art_settings, app_settings_open },
+    { "Activity",     art_taskman,  app_taskman_open  },
+    { "About",        art_about,    app_about_open    },   // matches "About hawkOS"
 };
 #define APP_N ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
@@ -242,7 +281,7 @@ static int dock_slot_x(int x0, int i){
 // taper, which is what makes the row feel like one surface being pushed
 // rather than one icon changing size on its own.
 static int dock_growth(int cx, int mouse_in, int mx){
-    if (!mouse_in) return 0;
+    if (!mouse_in || !settings.dock_zoom) return 0;
     int d = mx > cx ? mx - cx : cx - mx;
     if (d >= ICON_REACH) return 0;
     return (ICON_GROW * (ICON_REACH - d)) / ICON_REACH;
@@ -291,7 +330,9 @@ static void dock_paint(int bx, int by, int bw, int bh){
         // line: growing about the centre would push them through the panel.
         int cy = y0 + DOCK_PAD + ICON_S / 2 - grow / 2;
 
-        if (grow > ICON_GROW / 2) dock_hover = i;
+        if (mouse_in && my >= y0 - ICON_GROW && my < y0 + h &&
+            mx >= cx - (ICON_S + DOCK_GAP) / 2 && mx < cx + (ICON_S + DOCK_GAP) / 2)
+            dock_hover = i;
         APPS[i].art(cx, cy, s);
 
         if (app_win[i])
@@ -342,34 +383,45 @@ static int dock_click(int mx, int my){
 
 static void act_about(void){ app_about_open(); }
 static void act_appearance(void){
-    theme_set_dark(!theme_is_dark());
     // Windows repaint from the palette every frame and pick the change up on
     // their own. A rendered page does not: it was laid out with the colours
-    // that were current at the time, and has to be built again.
-    app_browser_relayout();
+    // that were current at the time, and has to be built again -- which
+    // settings_commit takes care of, along with remembering the choice.
+    settings.dark = !theme_is_dark();
+    settings_commit();
 }
 static void act_quit(void){ wm_quit(); }
+static void act_restart(void){ acpi_reboot(); }
+static void act_shutdown(void){ acpi_poweroff(); }
 
-static void act_files(void){ activate(0); }
-static void act_term(void){ activate(1); }
-static void act_browser(void){ activate(2); }
-static void act_activity(void){ activate(3); }
+static void act_files(void){ activate(APP_FILES); }
+static void act_term(void){ activate(APP_TERM); }
+static void act_browser(void){ activate(APP_BROWSER); }
+static void act_edit(void){ activate(APP_EDIT); }
+static void act_settings(void){ activate(APP_SETTINGS); }
+static void act_activity(void){ activate(APP_ACTIVITY); }
 
 typedef struct { const char* label; void (*run)(void); } item_t;
 
 static const item_t M_SYSTEM[] = {
     { "About This System", act_about },
+    { "Settings",          act_settings },
     { "-",                 0 },
     // Relabelled at draw time to say what it will do rather than what it is.
     { "Use Dark Appearance", act_appearance },
     { "-",                 0 },
     { "Quit to Console",   act_quit },
+    { "-",                 0 },
+    { "Restart",           act_restart },
+    { "Shut Down",         act_shutdown },
 };
 
 static const item_t M_APPS[] = {
     { "Files",    act_files },
     { "Terminal", act_term },
     { "Browser",  act_browser },
+    { "Editor",   act_edit },
+    { "Settings", act_settings },
     { "Activity Monitor", act_activity },
 };
 
@@ -397,7 +449,7 @@ static int menu_item_count(int m){
 }
 
 static const char* menu_item_label(int m, int i){
-    if (m == 0 && i == 2)
+    if (m == 0 && i == 3)
         return theme_is_dark() ? "Use Light Appearance" : "Use Dark Appearance";
     if (m != 2) return MENUS[m].items[i].label;
     if (!win_list_n) return "No Windows";
@@ -448,9 +500,17 @@ static void menubar_paint(int bx, int by, int bw, int bh){
     // longer value pushes its neighbours left instead of colliding with them.
     rtc_time_t t;
     rtc_read(&t);
-    ksnprintf(clock_buf, sizeof(clock_buf), "%s %u %s  %02u:%02u",
-              weekday(t.year, t.month, t.day), t.day,
-              MONTHS[t.month >= 1 && t.month <= 12 ? t.month : 0], t.hour, t.min);
+    if (settings.clock24){
+        ksnprintf(clock_buf, sizeof(clock_buf), "%s %u %s  %02u:%02u",
+                  weekday(t.year, t.month, t.day), t.day,
+                  MONTHS[t.month >= 1 && t.month <= 12 ? t.month : 0], t.hour, t.min);
+    } else {
+        unsigned h12 = t.hour % 12 ? t.hour % 12 : 12;
+        ksnprintf(clock_buf, sizeof(clock_buf), "%s %u %s  %u:%02u %s",
+                  weekday(t.year, t.month, t.day), t.day,
+                  MONTHS[t.month >= 1 && t.month <= 12 ? t.month : 0], h12, t.min,
+                  t.hour >= 12 ? "PM" : "AM");
+    }
 
     int rx = (int)W - 14 - (int)gfx_text_width(clock_buf);
     gfx_text((uint32_t)rx, (uint32_t)((bh - 16) / 2), clock_buf,
@@ -574,6 +634,8 @@ void desktop_run(void){
     if (!gfx_available()) return;
 
     theme_init();
+    settings_load();        // the disk is mounted here if it is going to be
+    settings_apply();
     wm_init();
     wm_set_root(desktop_paint, desktop_click, desktop_key);
     wm_set_chrome(menubar_paint, menubar_click, dock_paint, dock_click);

@@ -21,6 +21,8 @@
 #include "header/syscall.h"
 #include "header/proc.h"
 #include "header/ktest.h"
+#include "header/fpu.h"
+#include "header/ac97.h"
 #include "serial.h"
 #include "kprintf.h"
 
@@ -72,6 +74,10 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_info) {
     kbd_init();
     mouse_init();
 
+    // The FPU has to be on, and a clean state captured, before the first task
+    // is created: every task starts from a copy of that state.
+    fpu_init();
+
     // Adopt this boot context as task 0 before enabling interrupts, so the
     // very first timer tick already has a valid task table to schedule from.
     task_init();
@@ -79,6 +85,8 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_info) {
     __asm__ __volatile__("sti");
 
     net_init();
+    ac97_init();          // absent on most test runs; the player then plays silently
+    { extern void hw_init(void); hw_init(); }   // ACPI tables + LAPIC (src/apic.c)
 
     // Mount the disk here rather than leaving it to whichever app happened to
     // want it first. It used to be mounted lazily by shell_init(), which meant

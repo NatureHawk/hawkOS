@@ -55,6 +55,16 @@ void theme_init(void);
 void theme_set_dark(int on);
 int  theme_is_dark(void);
 
+// Wallpapers. Each is a three-colour gradient (top, middle, bottom) that the
+// theme spreads over the palette's eight stops; the dark appearance gets the
+// same picture at a lower level. Number 0 is the original hand-tuned dawn.
+int         theme_wallpaper_count(void);
+const char* theme_wallpaper_name(int n);
+void        theme_set_wallpaper(int n);
+int         theme_wallpaper(void);
+// Stop `i` (0..7) of wallpaper `n` in the light or dark appearance, for previews.
+uint32_t    theme_wallpaper_stop(int n, int dark, int i);
+
 // Pulls a colour a page asked for towards something legible on the current
 // background: dark text is lifted in the dark appearance, light text is
 // dropped in the light one. Hue is preserved. Without this a page that names
